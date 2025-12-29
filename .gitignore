@@ -1,0 +1,7 @@
+node_modules
+ipfs_data
+indexer_data
+node_api_data
+secrets
+*.sqlite
+*.log

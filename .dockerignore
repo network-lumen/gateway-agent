@@ -1,0 +1,7 @@
+indexer/node_modules
+node_api/node_modules
+*.log
+.git
+indexer_data
+ipfs_data
+

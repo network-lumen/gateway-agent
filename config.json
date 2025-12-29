@@ -1,0 +1,42 @@
+{
+  "chainSeeds": [
+    {
+      "rpc": "http://142.132.201.187:26657",
+      "rest": "http://142.132.201.187:1317",
+      "grpcWeb": "http://142.132.201.187:9190"
+    }
+  ],
+  "operator": {
+    "address": "lmn1ksjeadh54n72f5792c9nn6xqdjvtp85j6akkkc",
+    "chainId": "lumen"
+  },
+  "pricing": [
+    {
+      "id": "basic",
+      "gbMonth": 100,
+      "priceLMN": 5,
+      "maxEgressGBMonth": 1000,
+      "notes": "Starter plan",
+      "monthsTotal": 12
+    },
+    {
+      "id": "pro",
+      "gbMonth": 1000,
+      "maxEgressGBMonth": 10000,
+      "priceLMN": 20,
+      "notes": "For creators",
+      "monthsTotal": 12
+    },
+    {
+      "id": "enterprise",
+      "gbMonth": 10000,
+      "maxEgressGBMonth": 100000,
+      "priceLMN": 120,
+      "notes": "High volume",
+      "monthsTotal": 12
+    }
+  ],
+  "webhook": {
+    "url": ""
+  }
+}

@@ -1,0 +1,92 @@
+version: "3.8"
+
+services:
+  ipfs:
+    image: ipfs/kubo:latest
+    restart: unless-stopped
+    environment:
+      IPFS_PROFILE: server
+      IPFS_PATH: /data/ipfs
+    volumes:
+      - /opt/lumen/gateway/ipfs_data:/data/ipfs
+      - ipfs_export:/export
+    ports:
+      - "4001:4001/tcp"
+      - "4001:4001/udp"
+      - "5001:5001"
+      - "18080:8080"
+    entrypoint:
+      - sh
+      - -c
+      - >
+        echo "[ipfs] boot";
+        echo "[ipfs] IPFS_PATH=$IPFS_PATH IPFS_PROFILE=$IPFS_PROFILE";
+        if [ ! -f "$IPFS_PATH/config" ]; then
+          echo "[ipfs] init";
+          ipfs init --profile="$IPFS_PROFILE" || true;
+        fi;
+        echo "[ipfs] config api/gateway";
+        ipfs config Addresses.API /ip4/0.0.0.0/tcp/5001;
+        ipfs config Addresses.Gateway /ip4/0.0.0.0/tcp/8080;
+        echo "[ipfs] starting daemon";
+        exec ipfs daemon --migrate=true
+
+  indexer:
+    build:
+      context: .
+      dockerfile: ./indexer/Dockerfile
+    restart: unless-stopped
+    environment:
+      - KUBO_API_BASE=http://ipfs:5001
+      - IPFS_GATEWAY_BASE=http://ipfs:8080
+      - INDEXER_DB_PATH=/data/indexer.sqlite
+      - INDEXER_PORT=8790
+      - PIN_LS_REFRESH_SECONDS=30
+    volumes:
+      - /opt/lumen/gateway/indexer_data:/data
+    depends_on:
+      - ipfs
+    ports:
+      - "8790:8790"
+
+  node_api:
+    build:
+      context: ./node_api
+    restart: unless-stopped
+    environment:
+      - NODE_API_WALLET_DB_PATH=/data/node_api/wallets.sqlite
+      - CHAIN_REST_BASE_URL=http://142.132.201.187:1317
+      - LUMEN_GATEWAY_KYBER_KEY_PATH=/secrets/kyber.json
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - /opt/lumen/gateway/ipfs_data:/data/ipfs:ro
+      - /opt/lumen/gateway/node_api_data:/data/node_api
+      - /opt/lumen/gateway/secrets/kyber.json:/secrets/kyber.json:ro
+    depends_on:
+      - ipfs
+    ports:
+      - "8787:8787"
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - node_api
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  ipfs_export:

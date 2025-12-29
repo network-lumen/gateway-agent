@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'gateway-node-api'
+    static_configs:
+      - targets: ['node_api:8787']
+  - job_name: 'gateway-indexer'
+    static_configs:
+      - targets: ['indexer:8790']

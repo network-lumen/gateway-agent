@@ -1,0 +1,180 @@
+__label__site page d accueil du gateway lumen
+__label__site site web statique sur ipfs
+__label__site site html servi via gateway
+__label__site site de docs hÈbergÈ sur ipfs
+__label__site blog personnel sur domaine lmn
+__label__site portfolio hebergÈ sur gateway
+__label__site single page app sur ipfs
+__label__site exemple de site dÈcentralisÈ
+__label__site page principale demo.lmn
+__label__site portail dÈveloppeur docs.lmn
+__label__video vidÈo tutorielle lumen mp4
+__label__video bande annonce hÈbergÈe sur ipfs
+__label__video playlist hls vidÈo pinnÈe
+__label__video vidÈo 4k servie par le gateway
+__label__video sÈrie d Èpisodes mp4
+__label__video enregistrement de livestream ipfs
+__label__video dossier vidÈo segments hls
+__label__video flux dash vidÈo
+__label__video confÈrence vidÈo enregistrÈe
+__label__video vidÈo de prÈsentation technique
+__label__image image haute rÈsolution sur ipfs
+__label__image logo png du gateway
+__label__image galerie de photos jpeg
+__label__image icones svg servies via gateway
+__label__image captures d Ècran du produit
+__label__image collection de wallpapers
+__label__image photo de profil sauvegardÈe
+__label__image memes hÈbergÈs sur ipfs
+__label__image image de couverture
+__label__image vignettes pour vidÈos
+__label__music fichier audio mp3 sur ipfs
+__label__music album flac pinnÈ sur gateway
+__label__music playlist de morceaux ipfs
+__label__music Èpisodes de podcast audio
+__label__music flux audio hls musique
+__label__music librairie d effets sonores
+__label__music pistes de musique d ambiance
+__label__music enregistrement de concert live
+__label__music archive de notes vocales
+__label__music archives d Èmissions radio
+__label__doc fichier pdf de documentation
+__label__doc docs markdown sur ipfs
+__label__doc collection de documents office
+__label__doc whitepaper pinnÈ sur gateway
+__label__doc spÈcification technique pdf
+__label__doc mÈmoire stockÈ sur ipfs
+__label__doc feuille de calcul des mÈtriques
+__label__doc document word partagÈ via gateway
+__label__doc archive de documents lÈgaux
+__label__doc dÈpÙt d articles de recherche
+__label__code snapshot de dÈpÙt de code source
+__label__code projet javascript en tarball
+__label__code bundle librairie typescript
+__label__code fichiers source smart contract
+__label__code miroir github sur ipfs
+__label__code scripts python archivÈs
+__label__code configs docker compose
+__label__code snapshot du repo de config
+__label__code code source de chain apps
+__label__code bundle du code lumen browser
+__label__file fichier gÈnÈrique a tÈlÈcharger
+__label__file blob binaire alÈatoire
+__label__file image iso stockÈe
+__label__file backup tar.gz dans ipfs
+__label__file archive zip depuis gateway
+__label__file collection de logs
+__label__file dump de base sqlite
+__label__file firmware binaire
+__label__file fichier de donnÈes random
+__label__file rÈpertoire upload gÈnÈrique
+__label__media jeu de donnÈes multimÈdia
+__label__media dossier avec vidÈos et images
+__label__media bibliothËque audio et photos
+__label__media photos et clips ensemble
+__label__media vitrine multimÈdia combinÈe
+__label__media album avec jaquette et pistes
+__label__media site avec mÈdia intÈgrÈ
+__label__media galerie de gifs et vidÈos
+__label__media vidÈo hls et images de prÈview
+__label__media pack multimÈdia multi formats
+__label__mixed contenu mixte type inconnu
+__label__mixed dossier avec fichiers variÈs
+__label__mixed snapshot ipfs alÈatoire
+__label__mixed contenu non classÈ clairement
+__label__mixed cid non catÈgorisÈ
+__label__mixed jeu de donnÈes de test
+__label__mixed docs et mÈdia mÈlangÈs
+__label__mixed archive avec diffÈrents formats
+__label__mixed dossier divers sur gateway
+__label__mixed upload expÈrimental mixte
+__label__site page de recherche gateway lumen
+__label__site site web tutoriel lumen
+__label__site portail documentation api gateway
+__label__site site support utilisateurs lumen
+__label__site tableau de bord administrateur gateway
+__label__site site vitrine application video
+__label__site site vitrine plateforme musique
+__label__site site exemple d app decentralisee
+__label__site site perso domaine lmn
+__label__site site blog heberge sur ipfs
+__label__video video tutoriel lumen
+__label__video enregistrement conference sur ipfs
+__label__video playlist hls de cours
+__label__video collection demoes video produit
+__label__video flux live enregistre sur gateway
+__label__video pack episodes video serie
+__label__video video longue formation
+__label__video extraits video pour marketing
+__label__video clips video utilisateurs
+__label__video video test performance hls
+__label__image captures ecran interface lumen
+__label__image galerie logos et pictos
+__label__image photos produit hebergees
+__label__image illustrations tutoriel
+__label__image pack images interface utilisateur
+__label__image vignettes pour liste videos
+__label__image images pour documentation
+__label__image fonds ecran personnalises
+__label__image images debug et logs graphiques
+__label__image images exemples pour dataset
+__label__music playlist musique travail
+__label__music pistes audio fond video
+__label__music sons interface application
+__label__music episodes podcast technique
+__label__music archive emissions radio tech
+__label__music bande son jeu video
+__label__music morceaux libres de droits
+__label__music bruitages interface lumen
+__label__music sons notification wallet
+__label__music collection musique communautaire
+__label__doc manuel operateur gateway ipfs
+__label__doc guide utilisateur browser lumen
+__label__doc fiche pratique recherche gateway
+__label__doc notes sur configuration hls
+__label__doc rapport performance ingest car
+__label__doc faq erreurs http 429
+__label__doc checklist debug lent uploads
+__label__doc specification fonctionnelle recherche
+__label__doc guide meilleures pratiques cid
+__label__doc plan de test recherche
+__label__code depot gateway agent lumen
+__label__code code controleur electron
+__label__code scripts outils ipfs
+__label__code base de code indexer
+__label__code composants vue recherche
+__label__code scripts generation dataset
+__label__code scripts migration base donnees
+__label__code config docker compose gateway
+__label__code fichiers config nginx
+__label__code exemples code integration api
+__label__file fichier car volumineux
+__label__file backup config gateway
+__label__file bundle logs support
+__label__file archive zip workspace
+__label__file fichier json resultats recherche
+__label__file fichier csv metriques usage
+__label__file capture trace debug
+__label__file sauvegarde base sqlite
+__label__file export configuration navigateur
+__label__file fichier texte notes debug
+__label__media pack media docs et videos
+__label__media dossier site et images
+__label__media bundle tutoriel texte et audio
+__label__media kit media marque lumen
+__label__media collection exemples media tests
+__label__media pack ressources formation
+__label__media ensemble assets application demo
+__label__media pack contenu marketing
+__label__media kit media lancement produit
+__label__media jeu donnees multimodal
+__label__mixed dossier mixte code et docs
+__label__mixed archive demo lumen complete
+__label__mixed bundle projet utilisateur
+__label__mixed pack contenu pour benchmark
+__label__mixed backup complet gateway
+__label__mixed pack dataset entrainement modele
+__label__mixed exemple contenu demo search
+__label__mixed archive support bug utilisateur
+__label__mixed tar workspace developpeur
+__label__mixed snapshot machine test

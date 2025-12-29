@@ -1,0 +1,327 @@
+__label__navigation page d accueil du gateway lumen
+__label__navigation ouvrir le navigateur lumen
+__label__navigation aller au tableau de bord du gateway
+__label__navigation accÈder  la page de statut ipfs
+__label__navigation paramËtres du domaine dns lumen
+__label__navigation ouvrir demo.lmn dans le gateway
+__label__navigation aller  la section contenus pinnÈs
+__label__navigation ouvrir l onglet consommation wallet
+__label__navigation afficher les plans de tarification
+__label__navigation voir la page des mÈtriques gateway
+__label__question c est quoi un gateway lumen ?
+__label__question comment pinner un dossier sur ipfs ?
+__label__question pourquoi mon cid n apparait pas ?
+__label__question comment vÈrifier si un cid est pinnÈ ?
+__label__question diffÈrence entre pin et ingest ?
+__label__question comment configurer un endpoint gateway ?
+__label__question pourquoi la consommation reste  zero ?
+__label__question comment voir les rÈsultats de recherche sÈmantique ?
+__label__question que contient le plan basic ?
+__label__question combien de gateways puis je enregistrer ?
+__label__content vidÈo de prÈsentation lumen gateway
+__label__content documentation ipfs sur dag import
+__label__content article sur le stockage dÈcentralisÈ
+__label__content billet de blog sur le streaming hls ipfs
+__label__content docs pour intÈgration browser et gateway
+__label__content contenu sur les enregistrements dns .lmn
+__label__content guide de configuration de la recherche sÈmantique
+__label__content tutoriel html hebergÈ sur ipfs
+__label__content doc markdown sauvegardÈe dans le gateway
+__label__content faq servie par l indexer
+__label__action pinner ce cid sur mon gateway
+__label__action ingester un gros dossier hls dans node_api
+__label__action enregistrer un nouvel opÈrateur de gateway
+__label__action mettre  jour la configuration de tarification
+__label__action dÈpinner une vidÈo de tous les gateways
+__label__action relancer l indexation sÈmantique pour ce cid
+__label__action vÈrifier le statut du pin sur un autre gateway
+__label__action synchroniser l index local avec node_api
+__label__action vider le cache nginx pour ce domaine
+__label__action dÈmarrer le daemon ipfs pour le browser
+__label__download tÈlÈcharger le fichier mp4 depuis le gateway
+__label__download rÈcupÈrer l archive car brute du cid
+__label__download sauvegarder la playlist hls en local
+__label__download exporter les mÈtriques gateway en csv
+__label__download tÈlÈcharger la doc pdf depuis ipfs
+__label__download rÈcupÈrer l image originale depuis l url gateway
+__label__download tÈlÈcharger la piste audio
+__label__download rÈcupÈrer un snapshot complet du rÈpertoire
+__label__download exporter l index sÈmantique en json
+__label__download tÈlÈcharger le site zippÈ depuis ipfs
+__label__discover dÈcouvrir les cids tendance sur ce gateway
+__label__discover explorer du contenu public
+__label__discover afficher les vidÈos populaires
+__label__discover lister les images rÈcemment uploadÈes
+__label__discover dÈcouvrir de la musique sur ipfs
+__label__discover trouver des documents partagÈs
+__label__discover parcourir les gateways mis en avant
+__label__discover explorer les suggestions de recherche sÈmantique
+__label__discover trouver du contenu avec label kind:video
+__label__discover dÈcouvrir des sites ipfs alÈatoires
+__label__unknown recherche test lumen bidon
+__label__unknown chaine alÈatoire ipfs ?? mix
+__label__unknown requete sans sens clair
+__label__unknown gateway truc machin tmp
+__label__unknown ??? ??? ??
+__label__unknown texte random 12345
+__label__unknown foo bar baz fr
+__label__unknown lmn debug xyz fr
+__label__unknown lorem ipsum ipfs fr
+__label__unknown recherche vide sans contexte
+__label__navigation aller sur la page search du gateway
+__label__navigation ouvrir la page pricing du gateway
+__label__navigation accÈder au tableau de bord lumen
+__label__navigation ouvrir la vue ipfs dans le browser
+__label__navigation aller sur la page des contenus pinnes
+__label__navigation ouvrir la liste des gateways enregistrees
+__label__navigation naviguer vers la section media
+__label__navigation changer d onglet vers recherche
+__label__navigation ouvrir les parametres du browser lumen
+__label__navigation voir la page d accueil demo.lmn
+__label__navigation aller sur docs.lmn pour la doc
+__label__navigation ouvrir la page de statut node_api
+__label__navigation naviguer vers les metriques gateway
+__label__navigation ouvrir l onglet consumption wallet
+__label__navigation aller a la vue drive panel
+__label__navigation ouvrir la liste des cids recents
+__label__navigation naviguer vers semantic search debug
+__label__navigation ouvrir la page d administration gateway
+__label__navigation ouvrir la page des logs dans lumen
+__label__navigation aller a la page de configuration dns lmn
+__label__question pourquoi la recherche gateway est vide
+__label__question comment activer la recherche semantique
+__label__question pourquoi /search renvoie 501 sur node_api
+__label__question comment brancher node_api sur l indexer
+__label__question pourquoi mon dossier hls est si lent
+__label__question comment verifier la sante de l indexer
+__label__question pourquoi demo.lmn ne se resout pas
+__label__question comment declarer un nouveau gateway sur chain
+__label__question pourquoi le timeout ingest est si long
+__label__question comment regler lumen_ingest_timeout_ms
+__label__question que fait exactement /ingest/car
+__label__question pourquoi je recois 429 ingest in progress
+__label__question comment fonctionne le lock par wallet
+__label__question difference entre node_api et chain_apps gateway
+__label__question comment entrainer un modele fasttext pour intentions
+__label__question comment ajouter la langue fr au modele
+__label__question pourquoi il faut un parametre lang explicite
+__label__question comment nettoyer les accents dans les requetes
+__label__question a quoi sert gateways_whitelist txt
+__label__content article en francais sur lumen gateway
+__label__content billet de blog sur la recherche gateway
+__label__content documentation sur la pipeline de recherche
+__label__content tuto video explique node_api searchcontroller
+__label__content guide texte sur l indexer sqlite
+__label__content article sur les domaines .lmn et dns
+__label__content contenu expliquant ipfs dag export
+__label__content documentation du browser electron lumen
+__label__content tutoriel deploiement stack gateway agent
+__label__content page de docs sur les labels kind video image
+__label__content guide pour ecrire des datasets fasttext
+__label__content article sur la classification de cibles media
+__label__content doc sur la separation navigation question contenu
+__label__content billet expliquant les timeouts ingest
+__label__content texte long sur l architecture chain_apps gateway
+__label__content presentation des endpoints /status /pricing /search
+__label__content doc sur la securite des gateways lumen
+__label__content guide de debug des erreurs fetch failed
+__label__content contenu expliquant comment lire les logs electron
+__label__action activer la recherche sur mon gateway
+__label__action configurer gateways_whitelist dans les ressources
+__label__action lancer docker compose up gateway agent
+__label__action redemarrer node_api depuis la machine hote
+__label__action lancer verify stack depuis scripts
+__label__action relancer l indexation semantique manuellement
+__label__action ouvrir les logs de l indexer en console
+__label__action editer config json pour ajouter le plan basic
+__label__action mettre a jour le fichier pricing json
+__label__action regler ipfs_api pour le gateway agent
+__label__action changer le port de l api ipfs
+__label__action activer le mode debug pour l indexeur
+__label__action exporter les datasets fasttext pour inspection
+__label__action sauvegarder une copie de gateways_whitelist
+__label__action supprimer un ancien gateway non actif
+__label__download telecharger un fichier mp4 depuis gateway lumen
+__label__download telecharger un car depuis ipfs api
+__label__download recuperer une archive zip de site static
+__label__download telecharger les metriques en json
+__label__download exporter la base sqlite de l indexer
+__label__download telecharger un bundle de code source
+__label__download recuperer un pdf de documentation
+__label__download telecharger un backup complet de node_api
+__label__download telecharger des thumbnails d une video
+__label__download telecharger une playlist hls entiere
+__label__download exporter les logs de gateway en fichier
+__label__download telecharger un pack de medias de test
+__label__download recuperer un tar gz d un repo github
+__label__download telecharger un dossier ipfs en une fois
+__label__discover decouvrir de nouveaux gateways compatibles lumen
+__label__discover explorer du contenu video sur les gateways
+__label__discover trouver des images creees par la communaute
+__label__discover decouvrir des sites heberges sur ipfs
+__label__discover explorer des cids etiquetes kind video
+__label__discover parcourir du contenu docs sur ipfs
+__label__discover trouver des playlists musique decentralisees
+__label__discover explorer des repos code sur ipfs
+__label__discover decouvrir des domaines .lmn interessants
+__label__discover trouver des exemples de dapps sur gateway
+__label__discover explorer les resultats de recherche semantique
+__label__discover decouvrir des contenus mixtes multimedia
+__label__discover trouver des tutoriels sur la stack lumen
+__label__discover chercher des exemples de hls sur ipfs
+__label__discover explorer les uploads recents sur mon gateway
+__label__unknown lumen requete inconnue debug
+__label__unknown recherche random ipfs lumen
+__label__unknown texte sans intention claire fr
+__label__unknown combinaison bizarre cid dns
+__label__unknown test de recherche aleatoire fr
+__label__unknown lorem ipsum gateway fr
+__label__unknown suite de mots sans contexte
+__label__unknown requete test ?? ipfs fr
+__label__unknown dummy query pour dataset fr
+__label__unknown ligne de bruit pour modele fr
+__label__navigation page de recherche gateway lumen
+__label__navigation ouvrir interface de recherche lumen
+__label__navigation aller a l onglet recherche du browser
+__label__navigation naviguer vers mes videos pinnees
+__label__navigation naviguer vers ma musique pinnee
+__label__navigation ouvrir la section documents recents
+__label__navigation aller a la bibliotheque de code
+__label__navigation ouvrir la vue explorateur de medias
+__label__navigation aller aux fichiers telecharges cette semaine
+__label__navigation aller a l historique du wallet
+__label__navigation ouvrir l historique des transactions
+__label__navigation aller a la liste des domaines dns
+__label__navigation ouvrir les parametres de whitelist gateway
+__label__navigation ouvrir les statistiques de recherche gateway
+__label__navigation aller aux outils de debug ipfs
+__label__navigation ouvrir explorateur de chain depuis gateway
+__label__navigation aller aux parametres de securite du compte
+__label__navigation ouvrir les parametres browser pour gateway
+__label__navigation aller a la page filtres avances
+__label__navigation ouvrir contenus favoris pinnes
+__label__question comment chercher sur tous les gateways
+__label__question comment trouver mon site pinne
+__label__question comment chercher par cid
+__label__question c est quoi un nom ipns dans lumen
+__label__question comment resoudre un domaine lmn
+__label__question comment chercher seulement des videos
+__label__question comment lister la musique pinnee
+__label__question peut on chercher des docs par nom de fichier
+__label__question comment filtrer les resultats par type de media
+__label__question comment chercher uniquement dans mon wallet
+__label__question comment chercher sur tous les gateways whitelistes
+__label__question pourquoi la recherche renvoie aucun resultat
+__label__question pourquoi la recherche renvoie une erreur 404
+__label__question comment de boguer une requete de recherche gateway
+__label__question comment voir la reponse brute json de recherche
+__label__question c est quoi la classification d intention
+__label__question comment fonctionne le label de cible
+__label__question comment changer la langue de recherche en francais
+__label__question pourquoi la langue de recherche est anglais
+__label__question comment limiter la recherche a mon domaine
+__label__content article sur la recherche gateway lumen
+__label__content page de documentation pour api de recherche
+__label__content guide de configuration de l index de recherche
+__label__content billet de blog sur les gateways whitelistes
+__label__content tutoriel pour utiliser les filtres de recherche
+__label__content contenu sur bonnes pratiques de cid ipfs
+__label__content description d un cas usage video hls
+__label__content docs expliquant comment la requete est nettoyee
+__label__content explication des labels d intention de recherche
+__label__content explication des labels de cible de recherche
+__label__content article comparant differents ipfs gateways
+__label__content documentation pour interface de recherche browser
+__label__content billet sur recherche de medias decentralisee
+__label__content faq sur problemes de recherche courants
+__label__content texte sur limites de taux et erreurs 429
+__label__content description du pipeline ingest car
+__label__content doc technique sur datasets fasttext
+__label__content documentation sur entrainement des modeles de recherche
+__label__content article sur reglage des seuils de recherche
+__label__content billet sur recherche semantique dans lumen
+__label__action lancer une recherche pour cette requete
+__label__action effacer les filtres de recherche actifs
+__label__action reinitialiser la langue de recherche
+__label__action ouvrir le resultat dans un nouvel onglet
+__label__action pinner le resultat sur mon gateway
+__label__action depinner le cid selectionne du gateway
+__label__action partager le lien du resultat
+__label__action copier le cid du resultat selectionne
+__label__action exporter les resultats de recherche en json
+__label__action telecharger le resultat de recherche en fichier
+__label__action ouvrir le domaine du resultat dans le browser
+__label__action affiner la recherche avec plus de mots
+__label__action retirer un terme de la requete
+__label__action signaler un resultat casse
+__label__action masquer ce resultat des futures recherches
+__label__action filtrer la recherche sur type video
+__label__action filtrer la recherche sur type image
+__label__discover decouvrir de nouveaux contenus video sur lumen
+__label__discover decouvrir des cids tendances sur gateway
+__label__discover decouvrir des domaines lmn populaires
+__label__discover decouvrir de la musique pinnee aujourd hui
+__label__discover decouvrir les documents recents du reseau
+__label__discover decouvrir du code open source par cid
+__label__discover explorer des resultats de recherche aleatoires
+__label__discover trouver des medias des wallets amis
+__label__discover explorer contenu public du demo gateway
+__label__discover decouvrir des applications decentralisees mises en avant
+__label__discover decouvrir bonnes pratiques de pin
+__label__discover decouvrir exemples de setups hls ipfs
+__label__discover decouvrir playlists video sur lumen
+__label__discover decouvrir galeries d images sur gateway
+__label__discover decouvrir repos de code par cid
+__label__download telecharger une video mp4 depuis un resultat
+__label__download telecharger un pdf de documentation depuis gateway
+__label__download telecharger une archive de segments hls
+__label__download telecharger une galerie d images en zip
+__label__download telecharger un album de musique depuis un cid
+__label__download telecharger un doc markdown depuis ipfs
+__label__download telecharger un site statique en archive
+__label__download telecharger un projet de code en sources
+__label__download telecharger une playlist audio depuis gateway
+__label__download telecharger un gros fichier car resultat
+__label__download telecharger un notebook avec exemples de code
+__label__download sauvegarder les resultats de recherche en local
+__label__download mettre en cache le resultat pour usage hors ligne
+__label__download dupliquer le site selectionne vers ipfs local
+__label__download sauvegarder contenu du cid sur mon node
+__label__download exporter des donnees d entrainement de recherche
+__label__download telecharger dataset fasttext pour analyse
+__label__action ouvrir une playlist hls depuis la recherche
+__label__action de boguer une requete hls lente
+__label__action inspecter dag ipfs pour cid selectionne
+__label__action ouvrir api kubo pour details du cid
+__label__action afficher logs gateway pour cette recherche
+__label__action tester performance pour cette requete
+__label__content guide sur optimisation des pins hls
+__label__content article sur dossiers avec beaucoup de petits fichiers
+__label__content explication du streaming de fichiers car
+__label__content bonnes pratiques pour ingest de gros dossiers
+__label__content description des limites par wallet
+__label__content billet sur logique de retry backoff
+__label__question pourquoi un dossier hls est lent a chercher
+__label__question pourquoi recherche mp4 est plus rapide que hls
+__label__question comment eviter le timeout en recherche
+__label__question pourquoi gateway renvoie une erreur 429
+__label__question comment recherche reagit quand gateway est down
+__label__question comment lire les logs d erreur de recherche
+__label__question que veut dire ingest en cours
+__label__question combien de temps prend un ingest car
+__label__navigation ouvrir resultats de recherche pour mon domaine
+__label__navigation aller a la recherche pour demo lmn
+__label__navigation ouvrir resultats pour docs lmn
+__label__navigation aller a l historique de recherche
+__label__navigation ouvrir la section recherches sauvegardees
+__label__navigation aller a la page d experiences de recherche
+__label__unknown texte aleatoire sans intention claire
+__label__unknown requete test lumen sans sens
+__label__unknown requete inconnue avec mots melanges
+__label__unknown ipfs lumen blabla quelque chose
+__label__unknown requete sans signification pour test
+__label__unknown exemple de requete que le modele ne comprend pas
+__label__unknown combinaison sans sens de mots gateway
+__label__unknown requete de debug pour forcer unknown
+__label__unknown requete de recherche de signification vide
+__label__unknown phrase de recherche placeholder pour dataset

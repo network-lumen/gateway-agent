@@ -1,0 +1,694 @@
+import { fileTypeFromBuffer } from 'file-type';
+import { CONFIG } from './config.js';
+import { fetchWithTimeout, nowMs, readResponseBodyLimited } from './utils.js';
+import { incrementIpfsRangeIgnored } from './metrics.js';
+import { log, logError } from './log.js';
+
+// Bump when detection + content analysis logic changes (e.g., CLIP tags, video/text metadata).
+export const DETECTOR_VERSION = 'type-v1';
+
+function kindFromMime(mime) {
+  if (!mime) return 'unknown';
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('audio/')) return 'audio';
+  if (mime === 'text/html' || mime === 'application/xhtml+xml') return 'html';
+  if (mime.startsWith('text/')) return 'text';
+  if (
+    mime === 'application/pdf' ||
+    mime.startsWith('application/msword') ||
+    mime.startsWith(
+      'application/vnd.openxmlformats-officedocument'
+    ) ||
+    mime === 'application/epub+zip'
+  ) {
+    return 'doc';
+  }
+  if (
+    mime === 'application/zip' ||
+    mime === 'application/x-tar' ||
+    mime === 'application/x-7z-compressed' ||
+    mime === 'application/x-rar-compressed'
+  ) {
+    return 'archive';
+  }
+  if (mime === 'application/vnd.ipld.car') return 'ipld';
+  return 'unknown';
+}
+
+function magicConfidenceForMime(mime) {
+  if (!mime) return 0.6;
+  if (mime === 'application/octet-stream') return 0.6;
+  if (mime === 'application/zip') return 0.9;
+  return 0.98;
+}
+
+function bufferToText(buf) {
+  if (!buf || buf.length === 0) return '';
+  return buf.toString('utf8').toLowerCase();
+}
+
+function parseMp4DurationSecondsFromBuffer(buf) {
+  if (!buf || buf.length < 32) return null;
+  const len = buf.length;
+
+  for (let i = 0; i <= len - 16; i += 1) {
+    const size = buf.readUInt32BE(i);
+    if (size && size < 16) continue;
+
+    if (
+      buf[i + 4] === 0x6d &&
+      buf[i + 5] === 0x76 &&
+      buf[i + 6] === 0x68 &&
+      buf[i + 7] === 0x64
+    ) {
+      const version = buf[i + 8];
+
+      if (version === 0) {
+        const needed = i + 28;
+        if (needed > len) continue;
+        const timescale = buf.readUInt32BE(i + 20);
+        const duration = buf.readUInt32BE(i + 24);
+        if (!timescale || !duration) continue;
+        if (timescale > 1000000) continue;
+        const seconds = duration / timescale;
+        if (!Number.isFinite(seconds) || seconds <= 0) continue;
+        return seconds;
+      }
+
+      if (version === 1 && typeof buf.readBigUInt64BE === 'function') {
+        const needed = i + 44;
+        if (needed > len) continue;
+        const timescale = buf.readUInt32BE(i + 28);
+        const durationBig = buf.readBigUInt64BE(i + 32);
+        if (!timescale || durationBig === 0n) continue;
+        if (timescale > 1000000) continue;
+        const seconds = Number(durationBig / BigInt(timescale));
+        if (!Number.isFinite(seconds) || seconds <= 0) continue;
+        return seconds;
+      }
+    }
+  }
+
+  return null;
+}
+
+function detectVideoMetadata({ sample, size, mime, ext_guess }) {
+  const kindMime = mime || '';
+  const ext = (ext_guess || '').toLowerCase().trim();
+
+  const maxSize =
+    typeof CONFIG.VIDEO_METADATA_MAX_SIZE_BYTES === 'number' &&
+    CONFIG.VIDEO_METADATA_MAX_SIZE_BYTES > 0
+      ? CONFIG.VIDEO_METADATA_MAX_SIZE_BYTES
+      : 30 * 1024 * 1024 * 1024;
+
+  if (typeof size === 'number' && size > 0 && size > maxSize) {
+    return null;
+  }
+
+  const isMp4Like =
+    kindMime === 'video/mp4' ||
+    ext === 'mp4' ||
+    ext === 'm4v' ||
+    ext === 'mov';
+
+  if (!isMp4Like) return null;
+
+  const candidates = [];
+  if (sample.head && sample.head.length) candidates.push(sample.head);
+  if (sample.tail && sample.tail.length) candidates.push(sample.tail);
+  if (sample.mid && sample.mid.length) candidates.push(sample.mid);
+
+  let seconds = null;
+  for (const buf of candidates) {
+    seconds = parseMp4DurationSecondsFromBuffer(buf);
+    if (seconds != null) break;
+  }
+
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return null;
+  }
+
+  const maxDurationSeconds =
+    typeof CONFIG.VIDEO_METADATA_MAX_DURATION_SECONDS === 'number' &&
+    CONFIG.VIDEO_METADATA_MAX_DURATION_SECONDS > 0
+      ? CONFIG.VIDEO_METADATA_MAX_DURATION_SECONDS
+      : 3 * 60 * 60;
+
+  if (seconds > maxDurationSeconds) {
+    return null;
+  }
+
+  const durationMs = Math.round(seconds * 1000);
+
+  return {
+    kind: 'video',
+    container: 'mp4',
+    duration_seconds: seconds,
+    duration_ms: durationMs
+  };
+}
+
+function detectContainer({ head, tail, mid, size }) {
+  const headText = bufferToText(head);
+  const tailText = bufferToText(tail);
+  const signals = {};
+
+  // PDF
+  if (headText.includes('%pdf-')) {
+    const mime = 'application/pdf';
+    signals.container = { type: 'pdf' };
+    return {
+      mime,
+      ext_guess: 'pdf',
+      kind: 'doc',
+      confidence: 0.95,
+      source: 'container',
+      signals
+    };
+  }
+
+  // ZIP and derivatives (docx/xlsx/pptx/epub/apk)
+  if (head && head.length >= 4 && head[0] === 0x50 && head[1] === 0x4b) {
+    const midText = bufferToText(mid);
+    const combinedText = headText + midText + tailText;
+    let ext = 'zip';
+    let mime = 'application/zip';
+    const container = { type: 'zip' };
+
+    if (combinedText.includes('word/')) {
+      ext = 'docx';
+      mime =
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      container.subtype = 'docx';
+    } else if (combinedText.includes('xl/')) {
+      ext = 'xlsx';
+      mime =
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      container.subtype = 'xlsx';
+    } else if (combinedText.includes('ppt/')) {
+      ext = 'pptx';
+      mime =
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      container.subtype = 'pptx';
+    } else if (
+      combinedText.includes('mimetypeapplication/epub+zip') ||
+      combinedText.includes('application/epub+zip')
+    ) {
+      ext = 'epub';
+      mime = 'application/epub+zip';
+      container.subtype = 'epub';
+    } else if (
+      combinedText.includes('androidmanifest.xml') ||
+      combinedText.includes('classes.dex') ||
+      combinedText.includes('resources.arsc')
+    ) {
+      ext = 'apk';
+      mime = 'application/vnd.android.package-archive';
+      container.subtype = 'apk';
+    }
+
+    signals.container = container;
+    return {
+      mime,
+      ext_guess: ext,
+      kind:
+        container.subtype === 'epub'
+          ? 'doc'
+          : container.subtype === 'apk'
+          ? 'package'
+          : 'archive',
+      confidence: container.subtype ? 0.97 : 0.9,
+      source: 'container',
+      signals
+    };
+  }
+
+  // MP4/MOV - ftyp box near start + moov somewhere later
+  if (head && head.length >= 12) {
+    const brand = head.subarray(4, 8).toString('ascii');
+    if (brand === 'ftyp') {
+      const major = head.subarray(8, 12).toString('ascii');
+      const tailHasMoov = tailText.includes('moov');
+      const confidence = tailHasMoov ? 0.93 : 0.88;
+      const signalsMp4 = {
+        type: 'mp4',
+        brand: major.trim(),
+        tailMoov: tailHasMoov
+      };
+      signals.container = signalsMp4;
+      return {
+        mime: 'video/mp4',
+        ext_guess: 'mp4',
+        kind: 'video',
+        confidence,
+        source: 'container',
+        signals
+      };
+    }
+  }
+
+  // HTML sniff
+  if (
+    headText.includes('<html') ||
+    headText.includes('<!doctype html') ||
+    headText.includes('<head') ||
+    headText.includes('<body')
+  ) {
+    signals.container = { type: 'html-sniff' };
+    return {
+      mime: 'text/html',
+      ext_guess: 'html',
+      kind: 'html',
+      confidence: 0.9,
+      source: 'container',
+      signals
+    };
+  }
+
+  // Simple CAR heuristic (very weak, best-effort)
+  if (head && head.length >= 4) {
+    const first = head[0];
+    const second = head[1];
+    if (first === 0x0a && (second === 0x01 || second === 0xa1)) {
+      signals.container = { type: 'car' };
+      return {
+        mime: 'application/vnd.ipld.car',
+        ext_guess: 'car',
+        kind: 'ipld',
+        confidence: 0.85,
+        source: 'container',
+        signals
+      };
+    }
+  }
+
+  return null;
+}
+
+function isMostlyText(buf) {
+  if (!buf || buf.length === 0) return false;
+  const len = Math.min(buf.length, 4096);
+  let ascii = 0;
+  for (let i = 0; i < len; i += 1) {
+    const c = buf[i];
+    if (c === 0) return false;
+    if (c >= 9 && c <= 13) {
+      ascii += 1;
+    } else if (c >= 32 && c < 127) {
+      ascii += 1;
+    }
+  }
+  return ascii / len > 0.8;
+}
+
+async function resolveSize(cid) {
+  const url = new URL(`/ipfs/${cid}`, CONFIG.IPFS_GATEWAY_BASE).toString();
+  try {
+    const resp = await fetchWithTimeout(
+      url,
+      { method: 'HEAD' },
+      { retries: 1 }
+    );
+    if (!resp.ok) return null;
+    const lenHeader = resp.headers.get('content-length');
+    if (!lenHeader) return null;
+    const size = Number.parseInt(lenHeader, 10);
+    return Number.isFinite(size) && size >= 0 ? size : null;
+  } catch (err) {
+    logError('HEAD size probe failed for cid', cid, err);
+    return null;
+  }
+}
+
+async function fetchRange(cid, start, end, httpMeta) {
+  const url = new URL(`/ipfs/${cid}`, CONFIG.IPFS_GATEWAY_BASE).toString();
+  const rangeHeader = `bytes=${start}-${end}`;
+  const resp = await fetchWithTimeout(
+    url,
+    {
+      method: 'GET',
+      headers: {
+        Range: rangeHeader
+      }
+    },
+    { retries: 2 }
+  );
+
+  const contentRange = resp.headers.get('content-range');
+  const hasContentRange = !!contentRange;
+  const supportsRange = resp.status === 206 || hasContentRange;
+  const rangeIgnored = resp.status === 200 && !hasContentRange;
+
+  if (!resp.ok && resp.status !== 206 && resp.status !== 200) {
+    throw new Error(
+      `gateway range fetch failed (${resp.status}) for cid=${cid}`
+    );
+  }
+
+  if (rangeIgnored) {
+    if (httpMeta) {
+      httpMeta.anyRangeIgnored = true;
+      if (httpMeta.supportsRange == null) {
+        httpMeta.supportsRange = false;
+      }
+    }
+    try {
+      await incrementIpfsRangeIgnored(1);
+    } catch (err) {
+      logError('incrementIpfsRangeIgnored error', err);
+    }
+    log(
+      '[detectType] gateway range ignored, falling back to capped read',
+      { cid, status: resp.status }
+    );
+  } else if (supportsRange && httpMeta && httpMeta.supportsRange == null) {
+    httpMeta.supportsRange = true;
+  }
+
+  const rangeLen = end - start + 1;
+  const buf = await readResponseBodyLimited(resp, rangeLen);
+  return buf;
+}
+
+async function sampleCid(cid, size) {
+  const sampleBytes = CONFIG.SAMPLE_BYTES;
+  const maxTotal = CONFIG.MAX_TOTAL_BYTES;
+
+  const segments = { head: null, tail: null, mid: null };
+  let total = 0;
+  const httpMeta = {
+    supportsRange: null,
+    anyRangeIgnored: false
+  };
+
+  // Head
+  const headEnd =
+    typeof size === 'number' && size > 0
+      ? Math.min(size - 1, sampleBytes - 1)
+      : sampleBytes - 1;
+  segments.head = await fetchRange(cid, 0, headEnd, httpMeta);
+  total += segments.head.length;
+
+  if (typeof size === 'number' && size > sampleBytes && total < maxTotal) {
+    const tailStart = Math.max(size - sampleBytes, 0);
+    const tailEnd = size - 1;
+    if (tailStart > headEnd) {
+      segments.tail = await fetchRange(cid, tailStart, tailEnd, httpMeta);
+      total += segments.tail.length;
+    }
+  }
+
+  if (
+    typeof size === 'number' &&
+    size > 2 * sampleBytes &&
+    total < maxTotal
+  ) {
+    const midStart = Math.max(
+      Math.floor(size / 2 - sampleBytes / 2),
+      0
+    );
+    const midEnd = Math.min(midStart + sampleBytes - 1, size - 1);
+    if (
+      (!segments.tail || midEnd < size - sampleBytes) &&
+      midStart > headEnd
+    ) {
+      segments.mid = await fetchRange(cid, midStart, midEnd, httpMeta);
+      total += segments.mid.length;
+    }
+  }
+
+  return {
+    ...segments,
+    totalBytes: total,
+    size,
+    httpMeta
+  };
+}
+
+function buildFallback(head, size) {
+  const textLike = isMostlyText(head);
+  const mime = textLike ? 'text/plain' : 'application/octet-stream';
+  return {
+    mime,
+    ext_guess: textLike ? 'txt' : null,
+    kind: textLike ? 'text' : 'unknown',
+    confidence: textLike ? 0.7 : 0.4,
+    source: 'heuristic',
+    signals: { heuristic: { textLike, size } }
+  };
+}
+
+async function magicDetect(head) {
+  if (!head || head.length === 0) return null;
+  const ft = await fileTypeFromBuffer(head);
+  if (!ft) return null;
+  const confidence = magicConfidenceForMime(ft.mime);
+  const kind = kindFromMime(ft.mime);
+  return {
+    mime: ft.mime,
+    ext_guess: ft.ext,
+    kind,
+    confidence,
+    source: 'magic',
+    signals: { magic: { ...ft, confidence } }
+  };
+}
+
+function mergeSignals(target, extra) {
+  if (!extra) return target;
+  for (const [k, v] of Object.entries(extra)) {
+    if (target[k] == null) {
+      target[k] = v;
+    } else if (typeof target[k] === 'object' && typeof v === 'object') {
+      target[k] = { ...target[k], ...v };
+    }
+  }
+  return target;
+}
+
+async function magikaDetect(sample, size) {
+  if (!CONFIG.MAGIKA_URL) return null;
+  try {
+    const body = {
+      size,
+      head_base64: sample.head
+        ? sample.head.toString('base64')
+        : null,
+      tail_base64: sample.tail
+        ? sample.tail.toString('base64')
+        : null
+    };
+    const resp = await fetchWithTimeout(CONFIG.MAGIKA_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (!data || !data.mime) return null;
+
+    const mime = data.mime;
+    const extGuess = data.ext || null;
+    const kind = data.kind || kindFromMime(mime);
+    const confidence =
+      typeof data.confidence === 'number'
+        ? Math.max(0, Math.min(1, data.confidence))
+        : 0.8;
+
+    return {
+      mime,
+      ext_guess: extGuess,
+      kind,
+      confidence,
+      source: 'magika',
+      signals: { magika: data }
+    };
+  } catch (err) {
+    logError('magikaDetect error', err);
+    return null;
+  }
+}
+
+export async function detectTypeForCid(cid, opts = {}) {
+  const warnings = [];
+  const startMs = nowMs();
+
+  let size = opts.sizeBytes;
+  if (typeof size !== 'number' || size < 0) {
+    size = await resolveSize(cid);
+    if (size == null) {
+      warnings.push('size_unknown');
+    }
+  }
+
+  let best = null;
+  const signals = {};
+  let disagreement = false;
+
+  const sample = await sampleCid(cid, size);
+
+  const httpMeta = sample.httpMeta;
+  if (httpMeta) {
+    const supportsRange =
+      typeof httpMeta.supportsRange === 'boolean'
+        ? httpMeta.supportsRange
+        : null;
+    const rangeIgnored = !!httpMeta.anyRangeIgnored;
+    if (rangeIgnored) {
+      warnings.push('range_not_supported_fallback_used');
+    }
+    mergeSignals(signals, {
+      http: {
+        supports_range: supportsRange,
+        range_ignored: rangeIgnored
+      }
+    });
+  }
+
+  // magicDetect via file-type
+  const magic = await magicDetect(sample.head);
+  if (magic) {
+    best = magic;
+    mergeSignals(signals, magic.signals);
+    const isGenericZip = magic.mime === 'application/zip';
+    if (magic.confidence >= 0.95 && !isGenericZip) {
+      return {
+        cid,
+        mime: magic.mime,
+        ext_guess: magic.ext_guess,
+        kind: magic.kind,
+        confidence: magic.confidence,
+        source: magic.source,
+        signals,
+        detector_version: DETECTOR_VERSION,
+        indexed_at: new Date().toISOString(),
+        size,
+        disagreement: false,
+        warnings,
+        sample: {
+          size,
+          head_bytes: sample.head?.length ?? 0,
+          tail_bytes: sample.tail?.length ?? 0,
+          mid_bytes: sample.mid?.length ?? 0,
+          total_bytes: sample.totalBytes,
+          supports_range:
+            typeof sample.httpMeta?.supportsRange === 'boolean'
+              ? sample.httpMeta.supportsRange
+              : null,
+          range_ignored: !!sample.httpMeta?.anyRangeIgnored
+        }
+      };
+    }
+  }
+
+  // containerDetect({head, tail, mid, size})
+  const container = detectContainer({
+    head: sample.head,
+    tail: sample.tail,
+    mid: sample.mid,
+    size
+  });
+  if (container) {
+    if (best && (best.mime !== container.mime || best.kind !== container.kind)) {
+      disagreement = true;
+    }
+    if (!best || container.confidence >= best.confidence) {
+      best = container;
+    }
+    mergeSignals(signals, container.signals);
+    if (container.confidence >= 0.85) {
+      return {
+        cid,
+        mime: best.mime,
+        ext_guess: best.ext_guess,
+        kind: best.kind,
+        confidence: best.confidence,
+        source: best.source,
+        signals,
+        detector_version: DETECTOR_VERSION,
+        indexed_at: new Date().toISOString(),
+        size,
+        disagreement,
+        warnings,
+        sample: {
+          size,
+          head_bytes: sample.head?.length ?? 0,
+          tail_bytes: sample.tail?.length ?? 0,
+          mid_bytes: sample.mid?.length ?? 0,
+          total_bytes: sample.totalBytes,
+          supports_range:
+            typeof sample.httpMeta?.supportsRange === 'boolean'
+              ? sample.httpMeta.supportsRange
+              : null,
+          range_ignored: !!sample.httpMeta?.anyRangeIgnored
+        }
+      };
+    }
+  }
+
+  // optional Magika fallback if configured
+  const magika = await magikaDetect(sample, size);
+  if (magika) {
+    if (best && (best.mime !== magika.mime || best.kind !== magika.kind)) {
+      disagreement = true;
+    }
+    if (!best || magika.confidence >= best.confidence) {
+      best = magika;
+    }
+    mergeSignals(signals, magika.signals);
+  }
+
+  // fallback
+  if (!best) {
+    best = buildFallback(sample.head, size);
+    mergeSignals(signals, best.signals);
+  }
+
+  if (best && best.kind === 'video') {
+    try {
+      const videoMeta = detectVideoMetadata({
+        sample,
+        size,
+        mime: best.mime,
+        ext_guess: best.ext_guess
+      });
+      if (videoMeta) {
+        mergeSignals(signals, { media: videoMeta });
+      }
+    } catch (err) {
+      logError('detectTypeForCid video metadata error', err);
+    }
+  }
+
+  const durationMs = nowMs() - startMs;
+  mergeSignals(signals, { timing_ms: durationMs });
+
+  return {
+    cid,
+    mime: best.mime,
+    ext_guess: best.ext_guess || null,
+    kind: best.kind,
+    confidence: best.confidence,
+    source: best.source,
+    signals,
+    detector_version: DETECTOR_VERSION,
+    indexed_at: new Date().toISOString(),
+    size,
+    disagreement,
+    warnings,
+    sample: {
+      size,
+      head_bytes: sample.head?.length ?? 0,
+      tail_bytes: sample.tail?.length ?? 0,
+      mid_bytes: sample.mid?.length ?? 0,
+      total_bytes: sample.totalBytes,
+      supports_range:
+        typeof sample.httpMeta?.supportsRange === 'boolean'
+          ? sample.httpMeta.supportsRange
+          : null,
+      range_ignored: !!sample.httpMeta?.anyRangeIgnored
+    }
+  };
+}

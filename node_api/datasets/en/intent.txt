@@ -1,0 +1,349 @@
+__label__navigation lumen gateway home
+__label__navigation open lumen browser homepage
+__label__navigation go to my gateway dashboard
+__label__navigation access ipfs gateway status page
+__label__navigation lumen dns domain settings
+__label__navigation open demo.lmn in gateway
+__label__navigation navigate to pinned content section
+__label__navigation open wallet usage screen
+__label__navigation go to pricing plans
+__label__navigation show gateway metrics page
+__label__question what is a lumen gateway
+__label__question how to pin a folder to ipfs
+__label__question why is my cid not visible
+__label__question how do i check if a cid is pinned
+__label__question what is the difference between pin and ingest
+__label__question how to configure custom gateway endpoint
+__label__question why does pricing show zero usage
+__label__question how to see semantic search results
+__label__question what does plan basic include
+__label__question how many gateways can i register
+__label__content lumen video tutorial about gateways
+__label__content ipfs documentation for dag import
+__label__content blog post on decentralized storage
+__label__content article explaining hls streaming over ipfs
+__label__content docs for browser integration with gateway
+__label__content content about dns records for .lmn domains
+__label__content guide to semantic search configuration
+__label__content tutorial pinned as html site
+__label__content markdown docs stored on ipfs
+__label__content faq page cached in gateway indexer
+__label__action pin this cid to my gateway
+__label__action ingest large hls folder into node_api
+__label__action register new gateway operator
+__label__action update gateway pricing configuration
+__label__action unpin video from all gateways
+__label__action trigger semantic reindex for cid
+__label__action verify pin status on remote gateway
+__label__action sync local indexer with node_api
+__label__action flush nginx cache for this domain
+__label__action start ipfs daemon for browser
+__label__navigation lumen gateway search page
+__label__navigation open lumen search interface
+__label__navigation go to search tab in browser
+__label__navigation navigate to my pinned videos
+__label__navigation navigate to my pinned music
+__label__navigation open recent documents section
+__label__navigation go to code snippets library
+__label__navigation open media explorer view
+__label__navigation navigate to files uploaded this week
+__label__navigation go to wallet history page
+__label__navigation open tx history for my wallet
+__label__navigation go to dns domains list
+__label__navigation open gateway whitelist settings
+__label__navigation open gateway search analytics
+__label__navigation navigate to ipfs debug tools
+__label__navigation open chain explorer from gateway
+__label__navigation go to account security settings
+__label__navigation open browser settings for gateway
+__label__navigation go to advanced search filters
+__label__navigation open favorites pinned content
+__label__question how to search all gateways
+__label__question how to find my pinned site
+__label__question how to search by cid
+__label__question what is ipns name in lumen
+__label__question how to resolve lmn domain
+__label__question how to search only videos
+__label__question how to list all music pinned
+__label__question can i search docs by filename
+__label__question how to filter results by media type
+__label__question how to search only in my wallet
+__label__question how to search across all whitelisted gateways
+__label__question why search gives no results
+__label__question why search returns 404 error
+__label__question how to debug gateway search query
+__label__question how to see raw search response json
+__label__question what is search intent classification
+__label__question how does target label work
+__label__question how to change search language to french
+__label__question why search language is english
+__label__question how to limit search to my domain
+__label__content article about lumen gateway search
+__label__content documentation page for search api
+__label__content guide for configuring search index
+__label__content blog describing whitelisted gateways
+__label__content tutorial for using search filters
+__label__content content about ipfs cid best practices
+__label__content description of hls video search use case
+__label__content docs explaining how query is cleaned
+__label__content explanation of search intent labels
+__label__content explanation of search target labels
+__label__content article comparing ipfs gateways
+__label__content documentation for browser search ui
+__label__content blog post about decentralized media search
+__label__content faq for common search problems
+__label__content text about rate limits and 429 errors
+__label__content description of ingest car pipeline
+__label__content technical doc for fasttext datasets
+__label__content documentation on training search models
+__label__content article on tuning search thresholds
+__label__content post about semantic search on lumen
+__label__action run search for this query
+__label__action clear current search filters
+__label__action reset search language to default
+__label__action open result in new browser tab
+__label__action pin selected result to my gateway
+__label__action unpin selected cid from gateway
+__label__action share search result link
+__label__action copy cid of selected result
+__label__action export search results as json file
+__label__action download search result as file
+__label__action open search result domain in browser
+__label__action refine search with more keywords
+__label__action remove term from search query
+__label__action report search result as broken
+__label__action hide result from future searches
+__label__action filter search by media type video
+__label__action filter search by media type image
+__label__discover discover new video content on lumen
+__label__discover discover trending cids on gateway
+__label__discover discover popular lmn domains
+__label__discover discover new music pinned today
+__label__discover discover recent documents in network
+__label__discover discover new open source code cids
+__label__discover explore random gateway search results
+__label__discover find new media from friends wallets
+__label__discover explore public demo gateway content
+__label__discover discover featured decentralized apps
+__label__discover discover best practices for pinning
+__label__discover discover examples of hls ipfs setups
+__label__discover discover video playlists on lumen
+__label__discover discover image galleries on gateway
+__label__discover discover code repositories via cid
+__label__download download mp4 video from search result
+__label__download download pdf documentation from gateway
+__label__download download archive of hls segments
+__label__download download image gallery as zip file
+__label__download download music album from cid
+__label__download download markdown doc from ipfs
+__label__download download static site as tar archive
+__label__download download code project as source files
+__label__download download audio playlist from gateway
+__label__download download large car file result
+__label__download download notebook with code examples
+__label__download download text transcript of video
+__label__download save search results to local cache
+__label__download cache search result for offline use
+__label__download mirror selected site to local ipfs
+__label__download backup cid content to my node
+__label__download export search training data
+__label__download download fasttext dataset for analysis
+__label__action open hls playlist from search
+__label__action debug slow hls search query
+__label__action inspect ipfs dag for selected cid
+__label__action open kubo api for cid details
+__label__action show gateway logs for this search
+__label__action test search performance for this query
+__label__content guide about optimizing hls pins
+__label__content article about many small files on ipfs
+__label__content explanation of car file streaming
+__label__content best practices for large folder ingest
+__label__content description of wallet based rate limits
+__label__content post about retry backoff logic
+__label__question why hls folder search is slow
+__label__question why mp4 search is faster than hls
+__label__question how to avoid timeout on search
+__label__question why gateway returns error 429
+__label__question how search behaves when gateway down
+__label__question how to read search error logs
+__label__question what does ingest in progress mean
+__label__question how long does ingest car take
+__label__navigation open search results for my domain
+__label__navigation go to search results for demo lmn
+__label__navigation open search results for docs lmn
+__label__navigation navigate to my search history
+__label__navigation open saved searches section
+__label__navigation go to search experiments page
+__label__unknown random text with no clear intent
+__label__unknown jibberish lumen test query text
+__label__unknown unknown query with mixed keywords
+__label__unknown ipfs lumen blah blah something
+__label__unknown nonsense search string for testing
+__label__unknown sample query that model cannot classify
+__label__unknown meaningless combination of gateway words
+__label__unknown debug query to force unknown intent
+__label__unknown test search with empty meaning
+__label__unknown placeholder search phrase for dataset
+__label__download download mp4 file from gateway
+__label__download fetch raw car archive of cid
+__label__download save hls playlist locally
+__label__download export gateway metrics to csv
+__label__download download pdf docs from ipfs
+__label__download grab original image from gateway url
+__label__download pull audio track as file
+__label__download retrieve entire directory snapshot
+__label__download export semantic index as json
+__label__download download zipped website from ipfs
+__label__discover discover trending cids on this gateway
+__label__discover explore new public content
+__label__discover show popular video pins
+__label__discover list recent image uploads
+__label__discover discover music on decentralized storage
+__label__discover find docs shared by community
+__label__discover browse featured gateways
+__label__discover explore semantic search suggestions
+__label__discover discover content by label kind:video
+__label__discover find random ipfs sites
+__label__unknown qwerty lumen test something
+__label__unknown asdf ipfs ?? mixed query
+__label__unknown random string with no clear intent
+__label__unknown gateway blah blah tmp
+__label__unknown ??? ??? ??
+__label__unknown nonsense query 12345
+__label__unknown foo bar baz
+__label__unknown lmn debug xyz
+__label__unknown lorem ipsum ipfs
+__label__unknown empty meaning search
+__label__navigation lumen gateway login
+__label__navigation lumen gateway logout
+__label__navigation open lumen settings page
+__label__navigation go to gateway search page
+__label__navigation open domain management for .lmn
+__label__navigation navigate to my pinned sites
+__label__navigation show recently pinned cids
+__label__navigation go to wallet billing section
+__label__navigation open account profile in lumen browser
+__label__navigation switch to search tab in lumen
+__label__navigation lumen://home navigation
+__label__navigation open lumen://ipfs route
+__label__navigation open gateway admin panel
+__label__navigation go to metrics dashboard
+__label__navigation navigate to semantic search debug
+__label__navigation open gateway-agent readme
+__label__navigation show node_api status endpoint
+__label__navigation go to /pricing on gateway
+__label__navigation open /status for debug
+__label__navigation navigate to /wallet usage api
+__label__navigation open browser devtools for gateway tab
+__label__navigation jump to logs view in lumen
+__label__navigation open local indexer metrics
+__label__navigation go to ipfs raw view
+__label__navigation open drive panel in home
+__label__navigation switch to media library
+__label__navigation show pinned videos category
+__label__navigation show pinned music category
+__label__navigation open docs section in app
+__label__navigation open code snippets collection
+__label__question why is my gateway search empty
+__label__question how to enable semantic search on gateway
+__label__question why does /search return 501
+__label__question how to configure indexer database path
+__label__question why is the hls playlist not indexed
+__label__question how to add new gateway to whitelist
+__label__question how to set gateways_whitelist txt
+__label__question how does browser pick gateway endpoints
+__label__question what is the difference between ipfs api and gateway
+__label__question can i run node_api without docker
+__label__question why does ingress car return 429
+__label__question how to debug fetch failed in electron
+__label__question why does pricing endpoint timeout
+__label__question how to check indexer health on port 8790
+__label__question why is my domain demo.lmn not resolving
+__label__question comment is my cid not found in search
+__label__question how to train fasttext model for intents
+__label__question how to extend target labels dataset
+__label__question why does lang parameter default to en
+__label__question how to add fr support for search
+__label__content article about lumen gateway search pipeline
+__label__content documentation for node_api searchController
+__label__content blog explaining fasttext intent classification
+__label__content guide for configuring gateways_whitelist txt
+__label__content doc about ipfs dag export and car ingest
+__label__content tutorial on integrating electron and gateway-agent
+__label__content readme describing indexer semantic engine
+__label__content article showing how to pin hls streams
+__label__content long form blog post on decentralized video hosting
+__label__content documentation about dns .lmn domain records
+__label__content docs for nginx config in chain_apps gateway
+__label__content markdown page for lumen search ux
+__label__content guide to configuring backup and snapshots
+__label__content step by step tutorial for setting up local gateway stack
+__label__content text about comparing ipfs gateways
+__label__content how to build open dataset for search intent
+__label__content detailed explanation of search pipeline getsearch
+__label__content writeup on deterministic search inference
+__label__content notes on semantic labels kind video html audio
+__label__content content showing sample fasttext lines for targets
+__label__action enable search feature in gateway config
+__label__action disable click based ranking in indexer
+__label__action run docker compose up gateway-agent
+__label__action restart node_api service from host
+__label__action run verify stack script from scripts folder
+__label__action trigger manual reindex via cli
+__label__action open terminal logs for indexer
+__label__action configure env lumen_ingest_timeout_ms
+__label__action update docker compose ipfs port binding
+__label__action edit gateways_whitelist file in resources
+__label__action set default gateway in browser settings
+__label__action run unit tests for search controller
+__label__action generate new fasttext training data
+__label__action deploy updated models to gateway nodes
+__label__action backup node_api data directory
+__label__action roll back gateway config json
+__label__download download car file from ipfs api
+__label__download get raw dag export via http
+__label__download download semantic results as json file
+__label__download fetch gateway config json from host
+__label__download download pricing file from container
+__label__download save search logs snapshot locally
+__label__download export datasets en intent txt
+__label__download export datasets en target txt
+__label__download export datasets fr intent txt
+__label__download export datasets fr target txt
+__label__download download hls master m3u8 from gateway
+__label__download download video segment ts files
+__label__download download audio only stream
+__label__download download zip of site from ipfs
+__label__download download backup snapshot tar
+__label__discover discover new public gateways on chain
+__label__discover find gateways that support semantic
+__label__discover explore gateways with low latency
+__label__discover discover operators in eu region
+__label__discover search for demo content across gateways
+__label__discover find cids tagged with kind html
+__label__discover discover music stored on ipfs
+__label__discover explore docs indexed by type doc
+__label__discover search for code examples in ipfs repos
+__label__discover discover random lens of ipfs content
+__label__discover find trending .lmn domains
+__label__discover discover browser apps using lumen gateway
+__label__discover explore semantic neighbors of my cid
+__label__discover find mixed media collections
+__label__discover search for educational videos on lumen
+__label__discover discover assets from specific wallet
+__label__discover find popular pinned folders
+__label__unknown lumen unknown query placeholder
+__label__unknown random ipfs gateway test text
+__label__unknown search something something lumen
+__label__unknown ??? ipfs ??? lumen gateway
+__label__unknown test search string abc123
+__label__unknown meaningless query for training
+__label__unknown lorem ipsum lumen gateway
+__label__unknown generic debug search line
+__label__unknown weird combo cid ipfs dns
+__label__unknown just typing random gateway stuff
+__label__unknown foo lumen bar cid baz
+__label__unknown search ??? mixed noise
+__label__unknown ipfs ipns cid blah
+__label__unknown temp query do not use
+__label__unknown bogus content marker line
