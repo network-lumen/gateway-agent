@@ -89,6 +89,34 @@ function mapKindToResourceType(kind) {
   return 'all';
 }
 
+function normalizeStrictTypeFilter(typeValue) {
+  const t = String(typeValue || '').toLowerCase().trim();
+  if (t === 'video' || t === 'videos') return 'video';
+  if (t === 'image' || t === 'images') return 'image';
+  return '';
+}
+
+function hitMatchesStrictType(hit, strictType) {
+  const t = normalizeStrictTypeFilter(strictType);
+  if (!t) return true;
+
+  const kind = String(hit?.kind || '').toLowerCase().trim();
+  const mime = String(hit?.mime || hit?.path_mime_hint || '').toLowerCase().trim();
+  const resourceTypeRaw = String(hit?.resourceType || hit?.resource_type || '').toLowerCase().trim();
+  const resourceType = resourceTypeRaw || mapKindToResourceType(kind);
+
+  if (t === 'image') return resourceType === 'image' || kind === 'image' || mime.startsWith('image/');
+  if (t === 'video') return resourceType === 'video' || kind === 'video' || mime.startsWith('video/');
+  return true;
+}
+
+function applyStrictTypeFilter(hits, strictType) {
+  const t = normalizeStrictTypeFilter(strictType);
+  if (!t) return hits;
+  const list = Array.isArray(hits) ? hits : [];
+  return list.filter((h) => hitMatchesStrictType(h, t));
+}
+
 function clamp01(value) {
   const v = Number.isFinite(value) ? value : 0;
   if (v <= 0) return 0;
@@ -391,7 +419,8 @@ export async function getSearch(req, res) {
     const mode = modeRaw.toLowerCase();
     const typeRaw = String(req.query?.type || '').trim();
     const type = typeRaw.toLowerCase();
-    const isSiteSearch = mode === 'sites' || type === 'site';
+    const strictType = normalizeStrictTypeFilter(type);
+    const isSiteSearch = !strictType && (mode === 'sites' || type === 'site');
     const langParam = String(req.query?.lang || '').trim();
     const analysis = classifySearch(qRaw, { lang: langParam });
     const qInfo = cleanSearch(qRaw);
@@ -443,7 +472,7 @@ export async function getSearch(req, res) {
             topics
           };
 
-          hits = [hit];
+          hits = strictType ? applyStrictTypeFilter([hit], strictType) : [hit];
 
           return res.json({
             ok: true,
@@ -459,7 +488,7 @@ export async function getSearch(req, res) {
             },
             plan,
             hits,
-            ui
+            ui: hits.length ? ui : { state: 'no_results', reason: 'type_filter' }
           });
         }
       } catch {
@@ -772,6 +801,13 @@ export async function getSearch(req, res) {
         } catch {
           // ignore
         }
+      }
+    }
+
+    if (strictType && !isSiteSearch) {
+      hits = applyStrictTypeFilter(hits, strictType);
+      if ((!hits || hits.length === 0) && !ui) {
+        ui = { state: 'no_results', reason: 'type_filter' };
       }
     }
 
