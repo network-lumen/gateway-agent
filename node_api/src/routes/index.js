@@ -12,6 +12,7 @@ import { authWallet } from '../middleware/authWallet.js';
 import { postPqIpfs, postPqIpns } from '../controllers/ipfsProxyController.js';
 import { postRootsDomains } from '../controllers/internalCidController.js';
 import { getKyberPublicKey } from '../controllers/pqController.js';
+import { getIpfsSeed } from '../controllers/ipfsSeedController.js';
 
 export function buildRouter() {
   const router = express.Router();
@@ -23,6 +24,7 @@ export function buildRouter() {
   // Public API
   router.get('/status', getStatus);
   router.get('/pricing', getPricing);
+  router.get('/ipfs/seed', getIpfsSeed);
   router.post('/pq/search', express.json(), postSearchPq);
   router.get('/pq/pub', getKyberPublicKey);
 
