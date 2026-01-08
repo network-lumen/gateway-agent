@@ -1,6 +1,9 @@
 import { CONFIG } from './config.js';
 import { kuboLs } from './kuboClient.js';
 import { dbAll, dbGet, dbRun, runInTransaction } from './db.js';
+import { detectTypeForCid } from './detectType.js';
+import { buildTags } from './tags.js';
+import { analyzeContentForCid, mapContentClassFromKind } from './contentSniffer.js';
 import {
   incrementDirsExpanded,
   incrementDirExpandErrors
@@ -47,6 +50,169 @@ const PATH_EXT_ALLOWLIST = new Set([
   'avif',
   'svg'
 ]);
+
+function pickSiteEntrypoint(links) {
+  const list = Array.isArray(links) ? links : [];
+  const candidates = [];
+
+  for (const link of list) {
+    const name = String(link?.name || '').trim();
+    const cid = String(link?.cid || '').trim();
+    if (!name || !cid) continue;
+
+    const lower = name.toLowerCase();
+    let score = 0;
+
+    if (lower === 'index.html' || lower === 'index.htm' || lower === 'index.xhtml') {
+      score = 100;
+    } else if (lower === 'home.html' || lower === 'default.html') {
+      score = 90;
+    } else if (lower.endsWith('.html') || lower.endsWith('.htm') || lower.endsWith('.xhtml')) {
+      score = 80;
+    } else if (lower === 'readme.md' || lower === 'readme.txt') {
+      score = 70;
+    } else if (lower.endsWith('.md') || lower.endsWith('.markdown') || lower.endsWith('.txt')) {
+      score = 60;
+    } else {
+      continue;
+    }
+
+    const size = typeof link?.size === 'number' && link.size >= 0 ? link.size : null;
+    candidates.push({ cid, name, lower, score, size });
+  }
+
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    const as = Number.isFinite(a.size) ? a.size : -1;
+    const bs = Number.isFinite(b.size) ? b.size : -1;
+    if (bs !== as) return bs - as;
+    return a.lower.localeCompare(b.lower);
+  });
+
+  return candidates[0] || null;
+}
+
+async function getTagsJsonFromDb(cid) {
+  try {
+    const row = await dbGet('SELECT tags_json FROM cids WHERE cid = ?', [cid]);
+    const raw = row?.tags_json;
+    if (!raw) return null;
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeTagsJsonForSite(tagsJson, { derivedFrom } = {}) {
+  const base = tagsJson && typeof tagsJson === 'object' ? tagsJson : {};
+
+  const topics = Array.isArray(base.topics)
+    ? base.topics.map((t) => String(t || '').trim()).filter(Boolean)
+    : [];
+
+  const tokens =
+    base.tokens && typeof base.tokens === 'object' ? base.tokens : {};
+
+  const signals = base.signals && typeof base.signals === 'object'
+    ? base.signals
+    : { from: [], bytes_read: 0 };
+
+  const from = Array.isArray(signals.from) ? signals.from.slice(0, 20) : [];
+  if (derivedFrom?.path) {
+    const marker = `dir_entry:${String(derivedFrom.path).trim()}`;
+    if (marker && !from.includes(marker)) from.unshift(marker);
+  }
+
+  return {
+    ...base,
+    topics,
+    tokens,
+    content_class: base.content_class || 'site',
+    signals: {
+      ...signals,
+      from
+    },
+    derived_from: derivedFrom || base.derived_from || null
+  };
+}
+
+async function buildTagsJsonForCid(cid) {
+  const detection = await detectTypeForCid(cid, {});
+  const tagsArray = buildTags({ detection });
+
+  let contentMeta = null;
+  try {
+    contentMeta = await analyzeContentForCid(cid, detection);
+  } catch (err) {
+    logError('[dirExpander] analyzeContentForCid error', cid, err);
+  }
+
+  const baseTagsJson =
+    contentMeta ||
+    {
+      topics: [],
+      content_class: mapContentClassFromKind(detection.kind),
+      lang: 'en',
+      confidence:
+        typeof detection.confidence === 'number'
+          ? detection.confidence
+          : 0,
+      signals: {
+        from: [],
+        bytes_read: 0
+      }
+    };
+
+  return {
+    ...baseTagsJson,
+    tags: tagsArray
+  };
+}
+
+async function maybeUpdateRootSiteTags(rootCid, links) {
+  const entry = pickSiteEntrypoint(links);
+  if (!entry) return;
+
+  const derivedFrom = { cid: entry.cid, path: entry.name };
+
+  let current = null;
+  try {
+    current = await getTagsJsonFromDb(rootCid);
+  } catch {
+    current = null;
+  }
+
+  const alreadyFromSameEntrypoint =
+    current &&
+    typeof current === 'object' &&
+    current.derived_from &&
+    typeof current.derived_from === 'object' &&
+    String(current.derived_from.cid || '').trim() === entry.cid &&
+    String(current.derived_from.path || '').trim() === entry.name &&
+    ((Array.isArray(current.topics) && current.topics.length > 0) ||
+      (current.tokens && typeof current.tokens === 'object' && Object.keys(current.tokens).length > 0));
+
+  if (alreadyFromSameEntrypoint) return;
+
+  let tagsJson = await getTagsJsonFromDb(entry.cid);
+  if (!tagsJson) {
+    tagsJson = await buildTagsJsonForCid(entry.cid);
+  }
+
+  const normalized = normalizeTagsJsonForSite(tagsJson, { derivedFrom });
+
+  try {
+    await dbRun(
+      `UPDATE cids
+       SET tags_json = ?,
+           updated_at = ?
+       WHERE cid = ?`,
+      [JSON.stringify(normalized), nowMs(), rootCid]
+    );
+  } catch (err) {
+    logError('[dirExpander] failed to update root tags_json', rootCid, err);
+  }
+}
 
 function getExtFromName(name) {
   const idx = name.lastIndexOf('.');
@@ -309,6 +475,10 @@ async function expandOne(row, maxChildren) {
     links.length > maxChildren ? links.slice(0, maxChildren) : links;
   const truncated = links.length > maxChildren;
 
+  const shouldTagRootSite =
+    row.present_source === 'pinls' &&
+    (typeof row.expand_depth !== 'number' || row.expand_depth <= 0);
+
   await runInTransaction(async () => {
     await dbRun(
       `
@@ -424,6 +594,14 @@ async function expandOne(row, maxChildren) {
       }
     }
   });
+
+  if (shouldTagRootSite) {
+    try {
+      await maybeUpdateRootSiteTags(row.cid, limitedLinks);
+    } catch (err) {
+      logError('[dirExpander] root tag derivation failed', row.cid, err);
+    }
+  }
 
   return { expanded: true };
 }

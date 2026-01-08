@@ -180,19 +180,125 @@ function mapContentClassFromKind(kind, { isSubtitles } = {}) {
   return 'doc';
 }
 
+function decodeHtmlEntities(input) {
+  if (!input) return '';
+  const s = String(input);
+  const basic = s
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+
+  const withNumeric = basic
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+      try {
+        const code = Number.parseInt(hex, 16);
+        if (!Number.isFinite(code) || code <= 0) return ' ';
+        return String.fromCodePoint(code);
+      } catch {
+        return ' ';
+      }
+    })
+    .replace(/&#([0-9]+);/g, (_, dec) => {
+      try {
+        const code = Number.parseInt(dec, 10);
+        if (!Number.isFinite(code) || code <= 0) return ' ';
+        return String.fromCodePoint(code);
+      } catch {
+        return ' ';
+      }
+    });
+
+  return withNumeric;
+}
+
+function getHtmlAttr(tag, attrName) {
+  if (!tag || !attrName) return null;
+  const re = new RegExp(
+    `${String(attrName).replace(/[-/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&')}\\s*=\\s*(\"([^\"]*)\"|'([^']*)'|([^\\s\"'>]+))`,
+    'i'
+  );
+  const m = String(tag).match(re);
+  if (!m) return null;
+  return (m[2] || m[3] || m[4] || '').trim() || null;
+}
+
+function stripHtmlTags(input) {
+  if (!input) return '';
+  return String(input).replace(/<[^>]+>/g, ' ');
+}
+
+function extractHtmlMetadata(html) {
+  const raw = String(html || '');
+  let title = null;
+  let description = null;
+
+  const titleMatch = raw.match(/<title[^>]*>([\s\S]{0,512}?)<\/title>/i);
+  if (titleMatch && titleMatch[1]) {
+    const cleaned = decodeHtmlEntities(stripHtmlTags(titleMatch[1]))
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (cleaned) title = cleaned.slice(0, 200);
+  }
+
+  const metaTags = raw.match(/<meta\b[^>]*>/gi) || [];
+  for (const tag of metaTags) {
+    const name =
+      (getHtmlAttr(tag, 'name') || getHtmlAttr(tag, 'property') || '').trim().toLowerCase();
+    const content = getHtmlAttr(tag, 'content');
+    if (!name || !content) continue;
+
+    const cleaned = decodeHtmlEntities(content).replace(/\s+/g, ' ').trim();
+    if (!cleaned) continue;
+
+    if (!description && (name === 'description' || name === 'og:description' || name === 'twitter:description')) {
+      description = cleaned.slice(0, 300);
+    }
+    if (!title && (name === 'og:title' || name === 'twitter:title')) {
+      title = cleaned.slice(0, 200);
+    }
+
+    if (title && description) break;
+  }
+
+  return { title, description };
+}
+
+function extractReadableTextFromHtml(html) {
+  const raw = String(html || '');
+
+  const withoutBlocks = raw
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<svg[\s\S]*?<\/svg>/gi, ' ');
+
+  const stripped = stripHtmlTags(withoutBlocks);
+  const decoded = decodeHtmlEntities(stripped);
+  return decoded.replace(/\s+/g, ' ').trim();
+}
+
 async function analyzeHtmlFromText(headText, tailText, lang, bytesRead) {
   const html = `${headText} ${tailText}`;
-  const normalizedFull = normalizeText(Buffer.from(html, 'utf8'));
+  const { title, description } = extractHtmlMetadata(html);
+  const readable = extractReadableTextFromHtml(html);
+  const modelText = [title, description, readable].filter(Boolean).join(' ').trim();
+  const normalizedFull = normalizeText(Buffer.from(modelText || readable, 'utf8'));
   const tokenCounts = extractTokens(normalizedFull, lang);
-  const topics = deriveTopics(tokenCounts);
+  const derived = deriveTopics(tokenCounts);
   const tokens = {};
   for (const [t, c] of tokenCounts.entries()) {
     if (!t) continue;
     tokens[t] = c;
   }
 
+  let topics = [];
+
   try {
-    const aiTags = await tagTextWithModel(normalizedFull);
+    const aiTags = await tagTextWithModel(modelText || readable || normalizedFull);
     if (aiTags && aiTags.tokens) {
       for (const [k, v] of Object.entries(aiTags.tokens)) {
         const key = String(k || '').trim().toLowerCase();
@@ -212,9 +318,17 @@ async function analyzeHtmlFromText(headText, tailText, lang, bytesRead) {
     logError('contentSniffer.analyzeHtml text tag enrichment error', err?.message || err);
   }
 
+  for (const t of derived) {
+    const key = String(t || '').trim().toLowerCase();
+    if (!key) continue;
+    if (!topics.includes(key)) topics.push(key);
+  }
+
   return {
     topics,
     tokens,
+    title: title || null,
+    description: description || null,
     content_class: 'site',
     lang,
     confidence: 0.75,
@@ -231,17 +345,20 @@ async function analyzeTextFromSample(headBytes, lang, bytesRead) {
     : Buffer.from(headBytes).toString('utf8');
   const lines = raw.split(/\r?\n/).slice(0, 20);
   const joined = lines.join(' ');
+  const modelText = joined.replace(/\s+/g, ' ').trim();
   const normalized = normalizeText(Buffer.from(joined, 'utf8'));
   const tokenCounts = extractTokens(normalized, lang);
-  const topics = deriveTopics(tokenCounts);
+  const derived = deriveTopics(tokenCounts);
   const tokens = {};
   for (const [t, c] of tokenCounts.entries()) {
     if (!t) continue;
     tokens[t] = c;
   }
 
+  let topics = [];
+
   try {
-    const aiTags = await tagTextWithModel(normalized);
+    const aiTags = await tagTextWithModel(modelText || normalized);
     if (aiTags && aiTags.tokens) {
       for (const [k, v] of Object.entries(aiTags.tokens)) {
         const key = String(k || '').trim().toLowerCase();
@@ -259,6 +376,12 @@ async function analyzeTextFromSample(headBytes, lang, bytesRead) {
     }
   } catch (err) {
     logError('contentSniffer.analyzeText text tag enrichment error', err?.message || err);
+  }
+
+  for (const t of derived) {
+    const key = String(t || '').trim().toLowerCase();
+    if (!key) continue;
+    if (!topics.includes(key)) topics.push(key);
   }
 
   const isSubtitles = lines.some((line) => line.includes('-->'));
