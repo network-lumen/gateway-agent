@@ -4,8 +4,8 @@ import { fetchWithTimeout, nowMs, readResponseBodyLimited } from './utils.js';
 import { incrementIpfsRangeIgnored } from './metrics.js';
 import { log, logError } from './log.js';
 
-// Bump when detection + content analysis logic changes (e.g., CLIP tags, video/text metadata).
-export const DETECTOR_VERSION = 'type-v1';
+// Bump when detection + content analysis logic changes (e.g., AI tags, HTML text extraction).
+export const DETECTOR_VERSION = 'type-v3';
 
 function kindFromMime(mime) {
   if (!mime) return 'unknown';

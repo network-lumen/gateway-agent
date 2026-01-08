@@ -132,6 +132,54 @@ function clamp01(value) {
   return v;
 }
 
+// Filter out HTML-structural tokens that are common in raw markup and not useful as "site tags".
+const SITE_TAG_STOPWORDS = new Set([
+  'doctype',
+  'html',
+  'head',
+  'meta',
+  'charset',
+  'viewport',
+  'width',
+  'device',
+  'initial',
+  'scale',
+  'name',
+  'content',
+  'lang',
+  'utf',
+  'title',
+  'href',
+  'rel',
+  'link',
+  'stylesheet',
+  'src',
+  'class',
+  'id',
+  'div',
+  'span',
+  'button',
+  'self',
+  'script',
+  'style',
+  'http',
+  'https',
+  'www',
+  'com',
+  'lumen',
+  'ipfs',
+  'gateway'
+]);
+
+function shouldKeepSiteTag(tag) {
+  const t = String(tag || '').trim().toLowerCase();
+  if (!t) return false;
+  if (SITE_TAG_STOPWORDS.has(t)) return false;
+  // drop very short tokens (mostly markup noise)
+  if (t.length < 3) return false;
+  return true;
+}
+
 function extractHitTags(hit) {
   const tagsJson = hit && typeof hit.tags_json === 'object' ? hit.tags_json : null;
   const topicsRaw = Array.isArray(tagsJson?.topics)
@@ -148,16 +196,24 @@ function extractHitTags(hit) {
   const out = [];
   for (const t of topicsRaw) {
     const v = String(t || '').trim().toLowerCase();
-    if (v && !out.includes(v)) out.push(v);
+    if (!shouldKeepSiteTag(v)) continue;
+    if (!out.includes(v)) out.push(v);
   }
 
   if (tokensObj) {
     try {
-      const keys = Object.keys(tokensObj)
-        .map((k) => String(k || '').trim().toLowerCase())
-        .filter(Boolean)
-        .slice(0, 20);
-      for (const k of keys) {
+      const scored = Object.entries(tokensObj)
+        .map(([k, v]) => [String(k || '').trim().toLowerCase(), Number(v)])
+        .filter(([k, v]) => k && Number.isFinite(v) && v > 0)
+        .sort((a, b) => {
+          if (b[1] !== a[1]) return b[1] - a[1];
+          return String(a[0]).localeCompare(String(b[0]));
+        })
+        .slice(0, 40)
+        .map(([k]) => k);
+
+      for (const k of scored) {
+        if (!shouldKeepSiteTag(k)) continue;
         if (!out.includes(k)) out.push(k);
       }
     } catch {

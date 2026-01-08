@@ -278,7 +278,10 @@ function extractReadableTextFromHtml(html) {
 
   const stripped = stripHtmlTags(withoutBlocks);
   const decoded = decodeHtmlEntities(stripped);
-  return decoded.replace(/\s+/g, ' ').trim();
+  // Second pass: if the page contains encoded HTML (e.g., code snippets),
+  // decoding can reintroduce tags; strip again to avoid noisy tokens like "div", "class", etc.
+  const strippedAgain = stripHtmlTags(decoded);
+  return strippedAgain.replace(/\s+/g, ' ').trim();
 }
 
 async function analyzeHtmlFromText(headText, tailText, lang, bytesRead) {

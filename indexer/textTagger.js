@@ -186,6 +186,36 @@ const TEXT_TAG_LABELS = [
   'influencer profile page'
 ];
 
+function normalizeZeroShotResult(result) {
+  if (!result) return [];
+
+  // Some pipelines return an array of { label, score }.
+  if (Array.isArray(result)) {
+    return result;
+  }
+
+  // Zero-shot text classification in @xenova/transformers typically returns:
+  // { sequence, labels: string[], scores: number[] }
+  const labels = result.labels;
+  const scores = result.scores;
+
+  const hasLabels = Array.isArray(labels);
+  const hasScoresArrayLike =
+    scores && typeof scores.length === 'number' && scores.length >= 0;
+
+  if (!hasLabels || !hasScoresArrayLike) {
+    return [];
+  }
+
+  const items = [];
+  const n = Math.min(labels.length, scores.length);
+  for (let i = 0; i < n; i += 1) {
+    items.push({ label: labels[i], score: scores[i] });
+  }
+
+  return items;
+}
+
 export async function tagTextWithModel(text) {
   try {
     if (!text || typeof text !== 'string') return null;
@@ -214,8 +244,9 @@ export async function tagTextWithModel(text) {
 
     for (const chunk of chunks) {
       const result = await pipe(chunk, TEXT_TAG_LABELS, { multi_label: true });
-      if (!Array.isArray(result)) continue;
-      for (const item of result) {
+      const items = normalizeZeroShotResult(result);
+      if (!items.length) continue;
+      for (const item of items) {
         if (!item || typeof item.label !== 'string') continue;
         const label = item.label.trim().toLowerCase();
         const score = typeof item.score === 'number' ? item.score : 0;
