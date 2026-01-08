@@ -516,9 +516,10 @@ export async function getSearch(req, res) {
     let siteResults = null;
     let didYouMean = null;
 
-    if (q && isCidLike(q)) {
+    // IMPORTANT: CIDv0 is case-sensitive; do not use the lowercased `q` for CID detection.
+    if (qRaw && isCidLike(qRaw)) {
       try {
-        const resCid = await fetchCidInfo(q, { timeoutMs: 800 });
+        const resCid = await fetchCidInfo(qRaw, { timeoutMs: 800 });
         if (resCid.ok && resCid.cid) {
           const row = resCid.cid;
           let topics = [];
@@ -547,18 +548,18 @@ export async function getSearch(req, res) {
           // Do not apply the octet-stream suppression on direct CID lookup.
           // If the user (or UI) explicitly asks for a CID, return metadata even if MIME is generic.
 
-          return res.json({
-            ok: true,
-            analysis,
-            params: {
-              q_raw: qRaw,
-              q,
-              features: qInfo,
-              lang: analysis.lang,
-              limit,
-              offset,
-              facet
-            },
+           return res.json({
+             ok: true,
+             analysis,
+             params: {
+               q_raw: qRaw,
+               q: qRaw,
+               features: qInfo,
+               lang: analysis.lang,
+               limit,
+               offset,
+               facet
+             },
             plan,
             hits,
             ui: hits.length
