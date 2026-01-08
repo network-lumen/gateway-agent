@@ -20,16 +20,22 @@ services:
       - -c
       - >
         echo "[ipfs] boot";
-        echo "[ipfs] IPFS_PATH=$IPFS_PATH IPFS_PROFILE=$IPFS_PROFILE";
-        if [ ! -f "$IPFS_PATH/config" ]; then
+        echo "[ipfs] IPFS_PATH=/data/ipfs IPFS_PROFILE=server";
+        if [ ! -f "/data/ipfs/config" ]; then
           echo "[ipfs] init";
-          ipfs init --profile="$IPFS_PROFILE" || true;
+          ipfs init --profile="server" || true;
         fi;
         echo "[ipfs] config api/gateway";
         ipfs config Addresses.API /ip4/0.0.0.0/tcp/5001;
         ipfs config Addresses.Gateway /ip4/0.0.0.0/tcp/8080;
         echo "[ipfs] starting daemon";
         exec ipfs daemon --migrate=true
+    healthcheck:
+      test: ["CMD-SHELL", "ipfs --api /ip4/127.0.0.1/tcp/5001 id >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
   indexer:
     build:
@@ -45,9 +51,22 @@ services:
     volumes:
       - /opt/lumen/gateway/indexer_data:/data
     depends_on:
-      - ipfs
+      ipfs:
+        condition: service_healthy
     ports:
       - "8790:8790"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "const port=process.env.INDEXER_PORT||8790;require('http').get('http://127.0.0.1:'+port+'/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1));"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
   node_api:
     build:
@@ -57,15 +76,32 @@ services:
       - NODE_API_WALLET_DB_PATH=/data/node_api/wallets.sqlite
       - CHAIN_REST_BASE_URL=http://142.132.201.187:1317
       - LUMEN_GATEWAY_KYBER_KEY_PATH=/secrets/kyber.json
+      - REGION=${REGION:-}
+      - PUBLIC_ENDPOINT=${PUBLIC_ENDPOINT:-}
     volumes:
       - ./config.json:/app/config.json:ro
       - /opt/lumen/gateway/ipfs_data:/data/ipfs:ro
       - /opt/lumen/gateway/node_api_data:/data/node_api
       - /opt/lumen/gateway/secrets/kyber.json:/secrets/kyber.json:ro
     depends_on:
-      - ipfs
+      ipfs:
+        condition: service_healthy
+      indexer:
+        condition: service_healthy
     ports:
       - "8787:8787"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "const port=process.env.PORT||8787;require('http').get('http://127.0.0.1:'+port+'/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1));"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
   prometheus:
     image: prom/prometheus:latest
@@ -73,7 +109,10 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     depends_on:
-      - node_api
+      node_api:
+        condition: service_healthy
+      indexer:
+        condition: service_healthy
 
   grafana:
     image: grafana/grafana:latest

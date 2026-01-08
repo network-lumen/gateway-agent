@@ -49,6 +49,14 @@ function isCidLike(q) {
   return false;
 }
 
+function filterOctetStreamHits(hits) {
+  if (!Array.isArray(hits) || hits.length === 0) return [];
+  return hits.filter((hit) => {
+    const mime = String(hit?.mime || '').trim().toLowerCase();
+    return mime !== 'application/octet-stream';
+  });
+}
+
 async function hasIndexSignal(tokens) {
   for (const token of tokens) {
     const res = await searchCidsSimple(
@@ -473,6 +481,7 @@ export async function getSearch(req, res) {
           };
 
           hits = strictType ? applyStrictTypeFilter([hit], strictType) : [hit];
+          hits = filterOctetStreamHits(hits);
 
           return res.json({
             ok: true,
@@ -488,7 +497,12 @@ export async function getSearch(req, res) {
             },
             plan,
             hits,
-            ui: hits.length ? ui : { state: 'no_results', reason: 'type_filter' }
+            ui: hits.length
+              ? ui
+              : {
+                  state: 'no_results',
+                  reason: strictType ? 'type_filter' : 'mime_filter'
+                }
           });
         }
       } catch {
@@ -546,6 +560,11 @@ export async function getSearch(req, res) {
           }
         }
       }
+    }
+
+    hits = filterOctetStreamHits(hits);
+    if ((!hits || hits.length === 0) && !ui) {
+      ui = { state: 'no_results', reason: 'mime_filter' };
     }
 
     if (isSiteSearch && hits.length > 0) {

@@ -56,7 +56,13 @@ sudo chown -R "$USER":"$USER" /opt/lumen/gateway
 
 # 2) Generate a Kyber keypair
 cd node_api
+
+# Option A: local Node.js
 node scripts/gen_kyber_key.js --write-secret ./kyber.json > /tmp/kyber-meta.json
+
+# Option B: no local Node.js (Docker)
+docker run --rm -v "$PWD:/app" -w /app node:20-alpine sh -lc "npm install --no-package-lock --no-audit --no-fund && node scripts/gen_kyber_key.js --write-secret ./kyber.json" > /tmp/kyber-meta.json
+
 mv ./kyber.json /opt/lumen/gateway/secrets/kyber.json
 
 # 3) Go back to the root and start the stack
@@ -132,9 +138,15 @@ Typical changes:
 
 - set `CHAIN_REST_BASE_URL` to your own Lumen REST endpoint (local full node, sentry, or provider),
 - keep `NODE_API_WALLET_DB_PATH` and `LUMEN_GATEWAY_KYBER_KEY_PATH` aligned with the volumes you mount,
-- update `config.json` (at the repo root) with your `operator.address`, `region`, and `public` URL so `/status` reflects your deployment.
-- REGION=eu-west
-- PUBLIC_ENDPOINT=http://<ip>:<port>
+- update `config.json` (at the repo root) with your `operator.address` (and optionally `region` / `public` if you prefer file-based config),
+- optionally set `REGION` and `PUBLIC_ENDPOINT` env vars to override `config.json` without editing it (use a `.env` file with Docker Compose).
+
+Example `.env`:
+
+```env
+REGION=eu-west
+PUBLIC_ENDPOINT=http://<ip>:8787
+```
 
 ---
 
@@ -154,6 +166,10 @@ Example:
 ```bash
 cd /path/to/gateway-agent/node_api
 node scripts/gen_kyber_key.js --write-secret ./kyber.json > /tmp/kyber-meta.json
+
+# No local Node.js:
+docker run --rm -v "$PWD:/app" -w /app node:20-alpine sh -lc "npm install --no-package-lock --no-audit --no-fund && node scripts/gen_kyber_key.js --write-secret ./kyber.json" > /tmp/kyber-meta.json
+
 cat /tmp/kyber-meta.json | jq .gateway_metadata.crypto.kyber
 ```
 

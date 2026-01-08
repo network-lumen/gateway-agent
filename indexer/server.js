@@ -490,6 +490,11 @@ async function handleSearch(url, res) {
     const whereClauses = [];
     const whereParams = [];
 
+    // Gateway policy: do not surface unknown binary blobs.
+    // Always exclude generic octet-stream from search responses.
+    whereClauses.push('(c.mime IS NULL OR c.mime != ?)');
+    whereParams.push('application/octet-stream');
+
     const q = (params.get('q') || '').trim();
     if (q) {
       const like = `%${q}%`;

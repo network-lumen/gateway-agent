@@ -289,6 +289,12 @@ sudo ufw enable
 
 ### 3.1 Public endpoints
 
+- `GET /health` – container health check:
+
+  ```json
+  { "ok": true }
+  ```
+
 - `GET /status` – gateway health:
 
   ```json

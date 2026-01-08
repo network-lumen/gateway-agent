@@ -1,5 +1,5 @@
 import express from 'express';
-import { getStatus } from '../controllers/statusController.js';
+import { getHealth, getStatus } from '../controllers/statusController.js';
 import { getPricing } from '../controllers/pricingController.js';
 import { postPin, postUnpin } from '../controllers/pinController.js';
 import { getIsPinned } from '../controllers/ispinnedController.js';
@@ -22,6 +22,7 @@ export function buildRouter() {
   router.post('/pq/ipns', express.json(), postPqIpns);
 
   // Public API
+  router.get('/health', getHealth);
   router.get('/status', getStatus);
   router.get('/pricing', getPricing);
   router.get('/ipfs/seed', getIpfsSeed);

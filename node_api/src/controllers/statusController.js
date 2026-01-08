@@ -33,3 +33,7 @@ export async function getStatus(_req, res) {
     time: new Date().toISOString()
   });
 }
+
+export function getHealth(_req, res) {
+  res.json({ ok: true });
+}
