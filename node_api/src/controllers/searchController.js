@@ -180,20 +180,20 @@ function shouldKeepSiteTag(tag) {
   return true;
 }
 
-function extractHitTags(hit) {
-  const tagsJson = hit && typeof hit.tags_json === 'object' ? hit.tags_json : null;
-  const topicsRaw = Array.isArray(tagsJson?.topics)
-    ? tagsJson.topics
-    : Array.isArray(hit?.topics)
-      ? hit.topics
-      : [];
+function extractSiteTagsFromCidInfo(cidInfo) {
+  const tagsJson =
+    cidInfo && cidInfo.tags && typeof cidInfo.tags === 'object'
+      ? cidInfo.tags
+      : null;
 
+  const topicsRaw = Array.isArray(tagsJson?.topics) ? tagsJson.topics : [];
   const tokensObj =
     tagsJson && tagsJson.tokens && typeof tagsJson.tokens === 'object'
       ? tagsJson.tokens
       : null;
 
   const out = [];
+
   for (const t of topicsRaw) {
     const v = String(t || '').trim().toLowerCase();
     if (!shouldKeepSiteTag(v)) continue;
@@ -201,54 +201,24 @@ function extractHitTags(hit) {
   }
 
   if (tokensObj) {
-    try {
-      const scored = Object.entries(tokensObj)
-        .map(([k, v]) => [String(k || '').trim().toLowerCase(), Number(v)])
-        .filter(([k, v]) => k && Number.isFinite(v) && v > 0)
-        .sort((a, b) => {
-          if (b[1] !== a[1]) return b[1] - a[1];
-          return String(a[0]).localeCompare(String(b[0]));
-        })
-        .slice(0, 40)
-        .map(([k]) => k);
+    const scored = Object.entries(tokensObj)
+      .map(([k, v]) => [String(k || '').trim().toLowerCase(), Number(v)])
+      .filter(([k, v]) => k && Number.isFinite(v) && v > 0)
+      .sort((a, b) => {
+        if (b[1] !== a[1]) return b[1] - a[1];
+        return String(a[0]).localeCompare(String(b[0]));
+      })
+      .slice(0, 50)
+      .map(([k]) => k);
 
-      for (const k of scored) {
-        if (!shouldKeepSiteTag(k)) continue;
-        if (!out.includes(k)) out.push(k);
-      }
-    } catch {
-      // ignore
+    for (const k of scored) {
+      if (!shouldKeepSiteTag(k)) continue;
+      if (!out.includes(k)) out.push(k);
+      if (out.length >= 20) break;
     }
   }
 
-  return out;
-}
-
-function addTagScores(scoreMap, tags, weight) {
-  const w = Number.isFinite(weight) && weight > 0 ? weight : 1;
-  const m = scoreMap instanceof Map ? scoreMap : new Map();
-  for (const t of Array.isArray(tags) ? tags : []) {
-    const key = String(t || '').trim().toLowerCase();
-    if (!key) continue;
-    const prev = m.get(key) || 0;
-    m.set(key, prev + w);
-  }
-  return m;
-}
-
-function topTagsFromScores(scoreMap, limit = 20) {
-  const pairs = [];
-  for (const [k, v] of (scoreMap instanceof Map ? scoreMap : new Map()).entries()) {
-    pairs.push([k, Number.isFinite(v) ? v : 0]);
-  }
-  pairs.sort((a, b) => {
-    if (b[1] !== a[1]) return b[1] - a[1];
-    return String(a[0]).localeCompare(String(b[0]));
-  });
-  return pairs
-    .map((p) => String(p[0]))
-    .filter(Boolean)
-    .slice(0, Math.max(0, limit));
+  return out.slice(0, 20);
 }
 
 export function classifySearch(rawInput, opts = {}) {
@@ -694,29 +664,12 @@ export async function getSearch(req, res) {
         const candidateCidSet = new Set();
         const rootScores = new Map();
         let maxContentScore = 0;
-        const tagScoresByRootCid = new Map();
-        const tagScoresByCid = new Map();
 
         for (const hit of hits) {
           const cid = String(hit.cid || '').trim();
           const rootCid = String(hit.root_cid || cid).trim();
           if (cid) candidateCidSet.add(cid);
           if (rootCid) candidateCidSet.add(rootCid);
-
-          // Precompute tag score maps for later site enrichment.
-          const hitScore =
-            typeof hit._score === 'number' && Number.isFinite(hit._score)
-              ? hit._score
-              : 1;
-          const hitTags = extractHitTags(hit);
-          if (cid && hitTags.length) {
-            const prev = tagScoresByCid.get(cid) || new Map();
-            tagScoresByCid.set(cid, addTagScores(prev, hitTags, hitScore));
-          }
-          if (rootCid && hitTags.length) {
-            const prev = tagScoresByRootCid.get(rootCid) || new Map();
-            tagScoresByRootCid.set(rootCid, addTagScores(prev, hitTags, hitScore));
-          }
 
           if (rootCid) {
             const contentScore =
@@ -736,6 +689,29 @@ export async function getSearch(req, res) {
           const domainDetailsCache = new Map();
           const parentCache = new Map();
           const sitesMap = new Map();
+          const cidInfoCache = new Map();
+
+          const getCanonicalTagsForCid = async (cid) => {
+            const key = String(cid || '').trim();
+            if (!key) return [];
+            if (cidInfoCache.has(key)) {
+              const cached = cidInfoCache.get(key);
+              return Array.isArray(cached) ? cached : [];
+            }
+
+            let tags = [];
+            try {
+              const info = await fetchCidInfo(key, { timeoutMs: 800 });
+              if (info.ok && info.cid) {
+                tags = extractSiteTagsFromCidInfo(info.cid);
+              }
+            } catch {
+              // ignore
+            }
+
+            cidInfoCache.set(key, tags);
+            return tags;
+          };
 
           for (const [rootCid, rootScore] of rootScores.entries()) {
             // eslint-disable-next-line no-await-in-loop
@@ -784,7 +760,7 @@ export async function getSearch(req, res) {
                   let confidenceCoeff = 0;
                   let matchedCid = null;
 
-                  // CASE A — CID record
+                  // CASE A – CID record
                   if (recordKey === 'cid') {
                     if (candidateCidSet.has(value)) {
                       confidenceCoeff = 1.0;
@@ -809,7 +785,8 @@ export async function getSearch(req, res) {
                         }
                         if (parents.includes(value)) {
                           confidenceCoeff = 0.85;
-                          matchedCid = c;
+                          // Return the canonical on-chain CID (the record value), not the matched descendant CID.
+                          matchedCid = value;
                           recordType = 'cid';
                           break;
                         }
@@ -849,7 +826,8 @@ export async function getSearch(req, res) {
                           }
                           if (parents.includes(resolvedCid)) {
                             confidenceCoeff = 0.8;
-                            matchedCid = c;
+                            // Return the canonical CID resolved from the on-chain IPNS record.
+                            matchedCid = resolvedCid;
                             recordType = 'ipns';
                             break;
                           }
@@ -906,15 +884,8 @@ export async function getSearch(req, res) {
           const sites = Array.from(sitesMap.values());
           const maxScore = maxContentScore > 0 ? maxContentScore : 1;
 
-          // Roots already covered by a domain (via hits[]).
-          const coveredRoots = new Set();
+          const normalizedSites = [];
           for (const s of sites) {
-            for (const h of s.hits || []) {
-              if (h && h.rootCid) coveredRoots.add(h.rootCid);
-            }
-          }
-
-          const normalizedSites = sites.map((s) => {
             const baseContent =
               typeof s.contentScore === 'number' && Number.isFinite(s.contentScore)
                 ? s.contentScore / maxScore
@@ -922,29 +893,12 @@ export async function getSearch(req, res) {
             const domainRelevance = scoreDomainMatch(q, s.domain);
             const finalScore = clamp01(0.7 * baseContent + 0.3 * domainRelevance);
 
-            // Attach best-effort tags derived from the underlying content hits that matched this site.
-            const mergedTagScores = new Map();
-            for (const h of Array.isArray(s.hits) ? s.hits : []) {
-              const r = h && h.rootCid ? String(h.rootCid).trim() : '';
-              const c = h && h.cid ? String(h.cid).trim() : '';
-              if (r && tagScoresByRootCid.has(r)) {
-                const scoreMap = tagScoresByRootCid.get(r);
-                for (const [tag, score] of (scoreMap instanceof Map ? scoreMap : new Map()).entries()) {
-                  const prev = mergedTagScores.get(tag) || 0;
-                  mergedTagScores.set(tag, prev + (Number.isFinite(score) ? score : 0));
-                }
-              }
-              if (c && tagScoresByCid.has(c)) {
-                const scoreMap = tagScoresByCid.get(c);
-                for (const [tag, score] of (scoreMap instanceof Map ? scoreMap : new Map()).entries()) {
-                  const prev = mergedTagScores.get(tag) || 0;
-                  mergedTagScores.set(tag, prev + (Number.isFinite(score) ? score : 0));
-                }
-              }
-            }
-            const tags = topTagsFromScores(mergedTagScores, 20);
+            // Stable tags: use the canonical on-chain CID (domain record value / resolved IPNS CID),
+            // not query-dependent content-hit aggregation.
+            // eslint-disable-next-line no-await-in-loop
+            const tags = await getCanonicalTagsForCid(s.cid);
 
-            return {
+            normalizedSites.push({
               type: 'site',
               domain: s.domain,
               rootDomain: s.rootDomain,
@@ -954,8 +908,8 @@ export async function getSearch(req, res) {
               wallet: s.wallet,
               score: finalScore,
               tags
-            };
-          });
+            });
+          }
 
           const combined = normalizedSites;
 
