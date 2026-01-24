@@ -363,6 +363,21 @@ async function executePlanAgainstIndexerPaged(plan, queryTokens) {
 
   const tokens = Array.isArray(queryTokens) ? queryTokens : [];
 
+  // Empty query: keep deterministic "recent" ordering from `executePlanAgainstIndexerRaw`.
+  // This is used by the UI for "explore" / "hot" lists without requiring click signals.
+  if (!tokens.length) {
+    const limit = plan.limit;
+    const offset = plan.offset;
+    const sliced = allHits.slice(offset, offset + limit);
+    return sliced.map((hit) => ({
+      ...hit,
+      _score:
+        typeof hit.indexed_at === 'number' && Number.isFinite(hit.indexed_at)
+          ? hit.indexed_at
+          : 0
+    }));
+  }
+
   const scored = allHits.map((hit) => ({
     ...hit,
     _score: scoreHitWithQuery(hit, tokens)
@@ -541,12 +556,14 @@ export async function getSearch(req, res) {
     let ui = null;
     let siteResults = null;
     let didYouMean = null;
+    let directCidLookup = false;
 
     // IMPORTANT: CIDv0 is case-sensitive; do not use the lowercased `q` for CID detection.
     if (qRaw && isCidLike(qRaw)) {
       try {
         const resCid = await fetchCidInfo(qRaw, { timeoutMs: 800 });
         if (resCid.ok && resCid.cid) {
+          directCidLookup = true;
           const row = resCid.cid;
           let topics = [];
           if (row.tags && Array.isArray(row.tags.topics)) {
@@ -571,77 +588,54 @@ export async function getSearch(req, res) {
           };
 
           hits = strictType ? applyStrictTypeFilter([hit], strictType) : [hit];
-          // Do not apply the octet-stream suppression on direct CID lookup.
-          // If the user (or UI) explicitly asks for a CID, return metadata even if MIME is generic.
 
-           return res.json({
-             ok: true,
-             analysis,
-             params: {
-               q_raw: qRaw,
-               q: qRaw,
-               features: qInfo,
-               lang: analysis.lang,
-               limit,
-               offset,
-               facet
-             },
-            plan,
-            hits,
-            ui: hits.length
-              ? ui
-              : {
-                  state: 'no_results',
-                  reason: strictType ? 'type_filter' : 'no_match'
-                }
-          });
+          // Site mode: return a stable "site" entry for the CID itself so the UI can render it
+          // consistently (domain may be resolved separately).
+          if (isSiteSearch && hits.length > 0) {
+            const tags = extractSiteTagsFromCidInfo(row);
+            const title =
+              row.tags && typeof row.tags.title === 'string'
+                ? row.tags.title
+                : null;
+            const snippet =
+              row.tags && typeof row.tags.description === 'string'
+                ? row.tags.description
+                : null;
+            siteResults = [
+              {
+                type: 'site',
+                domain: null,
+                rootDomain: null,
+                record: '',
+                recordType: 'cid',
+                cid: row.cid,
+                wallet: null,
+                score: 1,
+                tags,
+                title,
+                snippet
+              }
+            ];
+            hits = [];
+          }
         }
       } catch {
         // fall through to normal flow on error
       }
     }
 
-    plan = buildSearchQuery({
-      intent: analysis.intent,
-      target: analysis.target,
-      limit,
-      offset
-    });
+    if (!directCidLookup) {
+      plan = buildSearchQuery({
+        intent: analysis.intent,
+        target: analysis.target,
+        limit,
+        offset
+      });
 
-    if (q && !(await isMeaningfulQuery(q))) {
-      ui = {
-        state: 'no_results',
-        reason: 'no_index_signal'
-      };
-      didYouMean = await suggestDidYouMean(q);
-      if (didYouMean) {
-        const meaningful = await isMeaningfulQuery(didYouMean);
-        if (!meaningful) {
-          didYouMean = null;
-        }
-      }
-    } else if (plan.intent !== 'navigation') {
-      const queryTokens = extractTokens(q);
-      hits = await executePlanAgainstIndexerPaged(plan, queryTokens);
-      if (
-        hits.length === 0 &&
-        (analysis.intent !== 'unknown' || analysis.target !== 'mixed')
-      ) {
-        plan = buildSearchQuery({
-          intent: 'unknown',
-          target: 'mixed',
-          limit,
-          offset
-        });
-        if (!plan.noQuery) {
-          hits = await executePlanAgainstIndexerPaged(plan, queryTokens);
-        }
-      }
-
-      if (!hits.length) {
+      if (q && !(await isMeaningfulQuery(q))) {
         ui = {
           state: 'no_results',
-          reason: 'no_match'
+          reason: 'no_index_signal'
         };
         didYouMean = await suggestDidYouMean(q);
         if (didYouMean) {
@@ -650,19 +644,56 @@ export async function getSearch(req, res) {
             didYouMean = null;
           }
         }
+      } else if (plan.intent !== 'navigation') {
+        const queryTokens = extractTokens(q);
+        hits = await executePlanAgainstIndexerPaged(plan, queryTokens);
+        if (
+          hits.length === 0 &&
+          (analysis.intent !== 'unknown' || analysis.target !== 'mixed')
+        ) {
+          plan = buildSearchQuery({
+            intent: 'unknown',
+            target: 'mixed',
+            limit,
+            offset
+          });
+          if (!plan.noQuery) {
+            hits = await executePlanAgainstIndexerPaged(plan, queryTokens);
+          }
+        }
+
+        if (!hits.length) {
+          ui = {
+            state: 'no_results',
+            reason: 'no_match'
+          };
+          didYouMean = await suggestDidYouMean(q);
+          if (didYouMean) {
+            const meaningful = await isMeaningfulQuery(didYouMean);
+            if (!meaningful) {
+              didYouMean = null;
+            }
+          }
+        }
       }
+
+      hits = filterOctetStreamHits(hits);
+      if ((!hits || hits.length === 0) && !ui) {
+        ui = { state: 'no_results', reason: 'mime_filter' };
+      }
+    } else if ((!hits || hits.length === 0) && !siteResults && !ui) {
+      ui = {
+        state: 'no_results',
+        reason: strictType ? 'type_filter' : 'no_match'
+      };
     }
 
-    hits = filterOctetStreamHits(hits);
-    if ((!hits || hits.length === 0) && !ui) {
-      ui = { state: 'no_results', reason: 'mime_filter' };
-    }
-
-    if (isSiteSearch && hits.length > 0) {
+    if (isSiteSearch && !siteResults && hits.length > 0) {
       try {
         // STEP 1: candidate CIDs and root CIDs from content hits
         const candidateCidSet = new Set();
-        const rootScores = new Map();
+        const rootMeta = new Map();
+        const rootsWithDomains = new Set();
         let maxContentScore = 0;
 
         for (const hit of hits) {
@@ -676,44 +707,77 @@ export async function getSearch(req, res) {
               typeof hit._score === 'number' && Number.isFinite(hit._score)
                 ? hit._score
                 : 0;
-            const prev = rootScores.get(rootCid) || 0;
-            const next = contentScore > prev ? contentScore : prev;
-            rootScores.set(rootCid, next);
-            if (next > maxContentScore) maxContentScore = next;
+            const existing = rootMeta.get(rootCid) || {
+              contentScore: 0,
+              indexedAt: 0,
+              title: null,
+              snippet: null
+            };
+            if (contentScore > existing.contentScore) {
+              existing.contentScore = contentScore;
+              if (typeof hit.title === 'string' && hit.title.trim()) {
+                existing.title = hit.title.trim();
+              }
+              if (typeof hit.snippet === 'string' && hit.snippet.trim()) {
+                existing.snippet = hit.snippet.trim();
+              }
+            }
+            const idx =
+              typeof hit.indexed_at === 'number' && Number.isFinite(hit.indexed_at)
+                ? hit.indexed_at
+                : 0;
+            if (idx > existing.indexedAt) {
+              existing.indexedAt = idx;
+            }
+            rootMeta.set(rootCid, existing);
+            if (existing.contentScore > maxContentScore) {
+              maxContentScore = existing.contentScore;
+            }
           }
         }
 
-        if (rootScores.size > 0) {
+        if (rootMeta.size > 0) {
           // STEP 2: wallets per root, STEP 3: domains per wallet, STEP 4: records matching CIDs
           const walletDomainsCache = new Map();
           const domainDetailsCache = new Map();
           const parentCache = new Map();
           const sitesMap = new Map();
-          const cidInfoCache = new Map();
+          const cidInfoCache = new Map(); // cid -> { tags, title, snippet }
 
-          const getCanonicalTagsForCid = async (cid) => {
+          const getCanonicalCidMeta = async (cid) => {
             const key = String(cid || '').trim();
-            if (!key) return [];
+            if (!key) return { tags: [], title: null, snippet: null };
             if (cidInfoCache.has(key)) {
               const cached = cidInfoCache.get(key);
-              return Array.isArray(cached) ? cached : [];
+              return cached && typeof cached === 'object'
+                ? cached
+                : { tags: [], title: null, snippet: null };
             }
 
             let tags = [];
+            let title = null;
+            let snippet = null;
             try {
               const info = await fetchCidInfo(key, { timeoutMs: 800 });
               if (info.ok && info.cid) {
                 tags = extractSiteTagsFromCidInfo(info.cid);
+                if (info.cid.tags && typeof info.cid.tags.title === 'string') {
+                  title = info.cid.tags.title;
+                }
+                if (info.cid.tags && typeof info.cid.tags.description === 'string') {
+                  snippet = info.cid.tags.description;
+                }
               }
             } catch {
               // ignore
             }
 
-            cidInfoCache.set(key, tags);
-            return tags;
+            const out = { tags, title, snippet };
+            cidInfoCache.set(key, out);
+            return out;
           };
 
-          for (const [rootCid, rootScore] of rootScores.entries()) {
+          for (const [rootCid, rootScoreMeta] of rootMeta.entries()) {
             // eslint-disable-next-line no-await-in-loop
             const wallets = await getWalletsForRootCid(rootCid);
             const uniqueWallets = Array.from(
@@ -766,6 +830,7 @@ export async function getSearch(req, res) {
                       confidenceCoeff = 1.0;
                       matchedCid = value;
                       recordType = 'cid';
+                      rootsWithDomains.add(rootCid);
                     } else {
                       // descendant: candidate is child of record.value
                       // cheap check via /parents for candidateCid, single hop
@@ -788,6 +853,7 @@ export async function getSearch(req, res) {
                           // Return the canonical on-chain CID (the record value), not the matched descendant CID.
                           matchedCid = value;
                           recordType = 'cid';
+                          rootsWithDomains.add(rootCid);
                           break;
                         }
                       }
@@ -807,6 +873,7 @@ export async function getSearch(req, res) {
                         confidenceCoeff = 0.9;
                         matchedCid = resolvedCid;
                         recordType = 'ipns';
+                        rootsWithDomains.add(rootCid);
                       } else {
                         // descendant: candidate is child of resolvedCid
                         // reuse the same /parents check as for CID records
@@ -829,6 +896,7 @@ export async function getSearch(req, res) {
                             // Return the canonical CID resolved from the on-chain IPNS record.
                             matchedCid = resolvedCid;
                             recordType = 'ipns';
+                            rootsWithDomains.add(rootCid);
                             break;
                           }
                         }
@@ -858,12 +926,14 @@ export async function getSearch(req, res) {
                     contentScore: 0,
                     domainScore: 0,
                     confidenceCoeff: 0,
-                    hits: []
+                    hits: [],
+                    roots: []
                   };
 
                   const contentScore =
-                    typeof rootScore === 'number' && Number.isFinite(rootScore)
-                      ? rootScore
+                    typeof rootScoreMeta.contentScore === 'number' &&
+                    Number.isFinite(rootScoreMeta.contentScore)
+                      ? rootScoreMeta.contentScore
                       : 0;
                   const weighted = contentScore * confidenceCoeff;
                   if (weighted > existing.contentScore) {
@@ -874,6 +944,7 @@ export async function getSearch(req, res) {
                     rootCid,
                     cid: matchedCid
                   });
+                  if (!existing.roots.includes(rootCid)) existing.roots.push(rootCid);
 
                   sitesMap.set(key, existing);
                 }
@@ -896,7 +967,7 @@ export async function getSearch(req, res) {
             // Stable tags: use the canonical on-chain CID (domain record value / resolved IPNS CID),
             // not query-dependent content-hit aggregation.
             // eslint-disable-next-line no-await-in-loop
-            const tags = await getCanonicalTagsForCid(s.cid);
+            const meta = await getCanonicalCidMeta(s.cid);
 
             normalizedSites.push({
               type: 'site',
@@ -907,7 +978,38 @@ export async function getSearch(req, res) {
               cid: s.cid,
               wallet: s.wallet,
               score: finalScore,
-              tags
+              owned: true,
+              tags: meta.tags,
+              title: meta.title || null,
+              snippet: meta.snippet || null
+            });
+          }
+
+          // CID-only fallback sites (no domain mapping). Still useful for discovery and recents.
+          for (const [rootCid, meta] of rootMeta.entries()) {
+            if (rootsWithDomains.has(rootCid)) continue;
+
+            // eslint-disable-next-line no-await-in-loop
+            const canonical = await getCanonicalCidMeta(rootCid);
+
+            const baseContent =
+              typeof meta.contentScore === 'number' && Number.isFinite(meta.contentScore)
+                ? meta.contentScore / maxScore
+                : 0;
+
+            normalizedSites.push({
+              type: 'site',
+              domain: null,
+              rootDomain: null,
+              record: '',
+              recordType: 'cid',
+              cid: rootCid,
+              wallet: null,
+              score: clamp01(baseContent),
+              owned: false,
+              tags: canonical.tags,
+              title: canonical.title || meta.title || null,
+              snippet: canonical.snippet || meta.snippet || null
             });
           }
 
@@ -916,10 +1018,17 @@ export async function getSearch(req, res) {
           if (combined.length > 0) {
             siteResults = combined.sort((a, b) => {
               if (b.score !== a.score) return b.score - a.score;
+              const ao = a.owned ? 1 : 0;
+              const bo = b.owned ? 1 : 0;
+              if (ao !== bo) return bo - ao;
               const da = a.domain || '';
               const db = b.domain || '';
               return da.localeCompare(db);
             });
+          }
+
+          if (Array.isArray(siteResults) && siteResults.length > 0) {
+            siteResults = siteResults.slice(offset, offset + limit);
           }
 
           if ((!siteResults || siteResults.length === 0) && !ui) {
