@@ -9,6 +9,14 @@ function makeBaseUrl() {
   return 'http://localhost:8790';
 }
 
+function makeKuboUrl() {
+  const env = process.env.KUBO_API_BASE;
+  if (env && typeof env === 'string' && env.trim()) {
+    return env.replace(/\/+$/, '');
+  }
+  return 'http://ipfs:5001';
+}
+
 function httpGet(url) {
   return new Promise((resolve, reject) => {
     const req = http.get(url, (res) => {
@@ -46,10 +54,13 @@ function httpPost(url) {
 
 async function main() {
   const base = makeBaseUrl();
+  const kuboBase = makeKuboUrl();
   let ok = true;
-  let presentTotal = null;
-  let sampleCid = null;
-  let samplePresentSource = null;
+
+  const sampleCid =
+    typeof process.env.SANITY_SAMPLE_CID === 'string'
+      ? process.env.SANITY_SAMPLE_CID.trim()
+      : '';
 
   try {
     const resp = await httpGet(`${base}/health`);
@@ -78,7 +89,7 @@ async function main() {
   }
 
   try {
-    const resp = await httpPost('http://ipfs:5001/api/v0/version');
+    const resp = await httpPost(`${kuboBase}/api/v0/version`);
     if (resp.statusCode === 200) {
       log('[sanity] kubo /api/v0/version OK');
     } else {
@@ -91,7 +102,7 @@ async function main() {
   }
 
   try {
-    const resp = await httpGet(`${base}/cids?present=1&limit=5`);
+    const resp = await httpGet(`${base}/metrics/state`);
     if (resp.statusCode === 200) {
       let parsed = null;
       try {
@@ -99,60 +110,58 @@ async function main() {
       } catch {
         parsed = null;
       }
-      const count =
-        parsed && Array.isArray(parsed.items) ? parsed.items.length : 0;
-      presentTotal =
-        parsed && typeof parsed.total === 'number' ? parsed.total : null;
-      if (count > 0) {
-        const first = parsed.items[0];
-        sampleCid = first && typeof first.cid === 'string' ? first.cid : null;
-        samplePresentSource =
-          first && typeof first.present_source === 'string'
-            ? first.present_source
-            : null;
+
+      const pinsCurrent =
+        parsed && typeof parsed.pins_current === 'number' ? parsed.pins_current : null;
+      const dbRowsCids =
+        parsed && typeof parsed.db_rows_cids === 'number' ? parsed.db_rows_cids : null;
+
+      if (pinsCurrent == null || dbRowsCids == null) {
+        ok = false;
+        logError('[sanity] /metrics/state bad_json');
+      } else {
+        log(`[sanity] /metrics/state OK pins_current=${pinsCurrent} db_rows_cids=${dbRowsCids}`);
       }
-      log(
-        `[sanity] /cids present=1 limit=5 OK items=${count} total=${presentTotal ?? 'n/a'}`
-      );
-    } else if (resp.statusCode === 404) {
-      // older builds might not have /cids; do not fail hard
-      log('[sanity] /cids not found (ignoring)');
     } else {
       ok = false;
-      logError('[sanity] /cids FAIL status=', resp.statusCode);
+      logError('[sanity] /metrics/state FAIL status=', resp.statusCode);
     }
   } catch (err) {
-    // optional, do not mark as fatal, but log
-    logError('[sanity] /cids error (non-fatal)', err);
+    ok = false;
+    logError('[sanity] /metrics/state error', err);
   }
 
-  // Check that /cid/:cid returns the same present_source as /cids for a sample row
+  try {
+    const resp = await httpGet(`${base}/search?token=pdf&present=1&limit=1&offset=0`);
+    if (resp.statusCode === 200) {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(resp.body);
+      } catch {
+        parsed = null;
+      }
+      const itemsCount =
+        parsed && Array.isArray(parsed.items) ? parsed.items.length : null;
+      if (itemsCount == null) {
+        ok = false;
+        logError('[sanity] /search bad_json');
+      } else {
+        log(`[sanity] /search OK items=${itemsCount}`);
+      }
+    } else {
+      ok = false;
+      logError('[sanity] /search FAIL status=', resp.statusCode);
+    }
+  } catch (err) {
+    ok = false;
+    logError('[sanity] /search error', err);
+  }
+
   if (sampleCid) {
     try {
       const resp = await httpGet(`${base}/cid/${encodeURIComponent(sampleCid)}`);
       if (resp.statusCode === 200) {
-        let parsed = null;
-        try {
-          parsed = JSON.parse(resp.body);
-        } catch {
-          parsed = null;
-        }
-        const presentSourceCid =
-          parsed && typeof parsed.present_source === 'string'
-            ? parsed.present_source
-            : null;
-        if (samplePresentSource != null && presentSourceCid != null) {
-          if (samplePresentSource !== presentSourceCid) {
-            ok = false;
-            logError(
-              `[sanity] mismatch: /cids present_source=${samplePresentSource} vs /cid present_source=${presentSourceCid} for cid=${sampleCid}`
-            );
-          } else {
-            log(
-              `[sanity] /cid present_source matches /cids for cid=${sampleCid} (${presentSourceCid})`
-            );
-          }
-        }
+        log(`[sanity] /cid sample OK cid=${sampleCid}`);
       } else {
         ok = false;
         logError('[sanity] /cid sample FAIL status=', resp.statusCode);
@@ -161,75 +170,6 @@ async function main() {
       ok = false;
       logError('[sanity] /cid sample error', err);
     }
-  }
-
-  // Optional consistency check: compare /cids total vs /metrics/state pins_current
-  if (presentTotal != null) {
-    try {
-      const resp = await httpGet(`${base}/metrics/state`);
-      if (resp.statusCode === 200) {
-        let parsed = null;
-        try {
-          parsed = JSON.parse(resp.body);
-        } catch {
-          parsed = null;
-        }
-        const pinsCurrent =
-          parsed && typeof parsed.pins_current === 'number'
-            ? parsed.pins_current
-            : null;
-        if (pinsCurrent != null && pinsCurrent !== presentTotal) {
-          ok = false;
-          logError(
-            `[sanity] mismatch: /cids total present=${presentTotal} vs /metrics pins_current=${pinsCurrent}`
-          );
-        } else if (pinsCurrent != null) {
-          log(
-            `[sanity] metrics pins_current matches /cids total (${pinsCurrent})`
-          );
-        }
-      } else {
-        ok = false;
-        logError(
-          '[sanity] /metrics/state FAIL status=',
-          resp.statusCode
-        );
-      }
-    } catch (err) {
-      ok = false;
-      logError('[sanity] /metrics/state error', err);
-    }
-  }
-
-  // Check for present=1 with removed_at != NULL
-  try {
-    const resp = await httpGet(`${base}/consistency`);
-    if (resp.statusCode === 200) {
-      let parsed = null;
-      try {
-        parsed = JSON.parse(resp.body);
-      } catch {
-        parsed = null;
-      }
-      const n =
-        parsed && typeof parsed.present_with_removed_at === 'number'
-          ? parsed.present_with_removed_at
-          : null;
-      if (n != null && n > 0) {
-        ok = false;
-        logError(
-          `[sanity] inconsistency: ${n} rows with present=1 and removed_at IS NOT NULL`
-        );
-      } else {
-        log('[sanity] no present=1 && removed_at!=NULL rows');
-      }
-    } else {
-      ok = false;
-      logError('[sanity] /consistency FAIL status=', resp.statusCode);
-    }
-  } catch (err) {
-    ok = false;
-    logError('[sanity] /consistency error', err);
   }
 
   if (!ok) {

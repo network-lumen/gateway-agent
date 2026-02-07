@@ -1,20 +1,22 @@
-import crypto from 'node:crypto';
-import { getWalletRoots, getWalletRootsSummary } from '../lib/walletDb.js';
+import { getWalletRootCids, getWalletRootsSummary } from '../lib/walletDb.js';
 import { fetchChildren } from '../lib/indexerClient.js';
 import { extractWallet } from '../lib/auth.js';
 import { ensureWalletPlanOk } from '../lib/walletPlan.js';
+import { sendPqJson } from '../lib/pqResponse.js';
 
 const MAX_NODES = 10_000;
 const CONCURRENCY = 6;
 const TIME_BUDGET_MS = 2500;
 
-async function computeCidCountForRoots(roots) {
+async function computeCidCountForRootCids(rootCids) {
   const visited = new Set();
   const queue = [];
 
-  for (const r of roots) {
-    if (!r.root_cid) continue;
-    queue.push(r.root_cid);
+  const list = Array.isArray(rootCids) ? rootCids : [];
+  for (const cid of list) {
+    const clean = String(cid || '').trim();
+    if (!clean) continue;
+    queue.push(clean);
   }
 
   if (queue.length === 0) {
@@ -121,7 +123,7 @@ export async function getWalletUsage(req, res) {
       }
     }
 
-    const roots = await getWalletRoots(wallet);
+    const rootCids = await getWalletRootCids(wallet);
     const summary = await getWalletRootsSummary(wallet);
 
     let planState;
@@ -155,8 +157,8 @@ export async function getWalletUsage(req, res) {
     };
 
     try {
-      if (roots.length > 0) {
-        const result = await computeCidCountForRoots(roots);
+      if (rootCids.length > 0) {
+        const result = await computeCidCountForRootCids(rootCids);
 
         const indexerError = result.indexerError || null;
         const totalCids =
@@ -229,35 +231,11 @@ export async function getWalletUsage(req, res) {
         bytes_estimated_total: summary.bytesEstimated,
         indexer_error: cidUsage.error
       },
-      roots
     };
 
-    const aesKey = req.pqAesKey;
-    if (aesKey && Buffer.isBuffer(aesKey)) {
-      try {
-        const plaintext = Buffer.from(JSON.stringify(responseBody ?? null), 'utf8');
-        const iv = crypto.randomBytes(12);
-        const cipher = crypto.createCipheriv('aes-256-gcm', aesKey, iv);
-        const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-        const tag = cipher.getAuthTag();
-
-        return res.json({
-          ciphertext: ct.toString('base64'),
-          iv: iv.toString('base64'),
-          tag: tag.toString('base64')
-        });
-      } catch (encErr) {
-        console.error('[walletUsage] pq response encrypt error', encErr);
-        return res.json({
-          error: 'pq_encrypt_failed',
-          message: 'failed_to_encrypt_response'
-        });
-      }
-    }
-
-    res.json(responseBody);
+    return sendPqJson(req, res, 200, responseBody, 'api:/wallet/:wallet/usage');
   } catch (err) {
     console.error('[api:/wallet/:wallet/usage] error', err);
-    res.status(500).json({ error: 'internal_error' });
+    return sendPqJson(req, res, 500, { error: 'internal_error' }, 'api:/wallet/:wallet/usage');
   }
 }

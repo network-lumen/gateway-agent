@@ -127,8 +127,7 @@ On the server side (`authWallet` + `decryptPqRequest`):
    }
    ```
 
-4. The existing `verifyRequestSignature` logic is reused to validate the wallet signature (same semantics as the legacy header‑based scheme).
-5. On success:
+4. On success:
    - `req.wallet` is set to the authenticated wallet,
    - `req.body` is set to the decrypted `payload`,
    - `req.pqAesKey` holds the AES key for optional encrypted responses.
@@ -166,7 +165,7 @@ The node API reads a JSON config at startup:
   },
   "region": "eu-de-hetzner",
   "public": "http://91.99.166.223:8787",
-  "pricing": [ /* optional pricing entries */ ]
+  "pricing": [ /* pricing entries */ ]
 }
 ```
 
@@ -179,9 +178,12 @@ Key environment variables:
 - `PORT` (default `8787`): HTTP listen port.
 - `REGION` (default `"unknown"`): region label in `/status`.
 - `PUBLIC_ENDPOINT` (default `http://localhost:<PORT>`): advertised public URL.
-- `CHAIN_REST_BASE_URL` (required in prod): base URL of the Lumen chain REST API, used to fetch plans from the gateways module.
+- `CHAIN_REST_BASE_URL` (recommended in prod): base URL of the Lumen chain REST API, used to fetch plans from the gateways module. If omitted, the service falls back to the first `chainSeeds[].rest` entry from `config.json` (and finally to `http://host.docker.internal:1317`).
 - `NODE_API_WALLET_DB_PATH`: SQLite path for wallet state (e.g. `/data/node_api/wallets.sqlite` in Docker).
 - `LUMEN_GATEWAY_KYBER_KEY_PATH` (required): path to the Kyber key file (`kyber.json` inside the container).
+- `KUBO_REQUEST_TIMEOUT_MS` (default `15000`): timeout (ms) for node_api → Kubo requests.
+- `KUBO_IMPORT_TIMEOUT_MS` (default `300000`): timeout (ms) for CAR ingest (`/api/v0/dag/import`).
+- `INGEST_TMP_DIR` (optional): directory used to spool CAR uploads before background ingest (defaults next to `NODE_API_WALLET_DB_PATH`).
 
 Other optional fields (`CONFIG.GATEWAY.pricing`, `CONFIG.GATEWAY.webhook`, `CONFIG.GATEWAY.operator`, `CONFIG.GATEWAY.chainSeeds`) drive pricing and webhook logic but are not required for a minimal deployment.
 
@@ -217,7 +219,7 @@ The relevant parts of `gateway-agent/docker-compose.yml`:
 ```yaml
 services:
   ipfs:
-    image: ipfs/kubo:latest
+    image: ${KUBO_IMAGE:-ipfs/kubo@sha256:8bc99f94ea109f27ac408354e92b74f4f6f804fe0b4576f424520a20475dc88e}
     restart: unless-stopped
     environment:
       IPFS_PROFILE: server
@@ -226,8 +228,8 @@ services:
       - /opt/lumen/gateway/ipfs_data:/data/ipfs
       - ipfs_export:/export
     ports:
-      - "5001:5001"   # IPFS API (do NOT expose on the public internet)
-      - "18080:8080"  # IPFS gateway (optional public)
+      - "${KUBO_API_BIND:-127.0.0.1}:5001:5001"      # IPFS API (do NOT expose on the public internet)
+      - "${KUBO_GATEWAY_BIND:-127.0.0.1}:18080:8080" # IPFS gateway (optional public)
 
   indexer:
     build:
@@ -299,9 +301,9 @@ sudo ufw enable
 
   ```json
   {
-    "version": "0.1.0",
+    "version": "0.1.1",
     "region": "eu-west",
-    "public": "http://91.92.93.94:8787",
+    "public": "http://<PUBLIC_IP>:8787",
     "ipfs": { "online": true },
     "time": "2025-12-28T02:25:43.580Z"
   }
@@ -341,16 +343,7 @@ Returns plan and usage for the authenticated wallet:
     "cids_walk_truncated_reason": null,
     "bytes_estimated_total": 70583782,
     "indexer_error": "timeout"
-  },
-  "roots": [
-    {
-      "wallet": "lmn1...",
-      "root_cid": "Qm...",
-      "created_at": 1766890349136,
-      "bytes_estimated": 70582240,
-      "status": "active"
-    }
-  ]
+  }
 }
 ```
 
@@ -449,7 +442,7 @@ The node API maintains a small SQLite database for wallet‑scoped state:
 
 - **indexer**:
   - Observation of Kubo pins and DAG edges via the IPFS API,
-  - type detection (image/video/audio/html/text/doc/archive/ipld/unknown),
+  - type detection
   - text/image tagging and search signals,
   - Prometheus `/metrics` for Grafana dashboards.
 

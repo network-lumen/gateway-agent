@@ -5,6 +5,7 @@ import { postPin, postUnpin } from '../controllers/pinController.js';
 import { getIsPinned } from '../controllers/ispinnedController.js';
 import { getIngestReady, postIngestInit, postIngestCar } from '../controllers/ingestController.js';
 import { postSearchPq } from '../controllers/searchController.js';
+import { postPqView } from '../controllers/viewController.js';
 import { getMetrics } from '../controllers/adminController.js';
 import { getWalletUsage } from '../controllers/walletUsageController.js';
 import { getWalletPinnedCids } from '../controllers/walletCidsController.js';
@@ -26,6 +27,7 @@ export function buildRouter() {
   router.get('/status', getStatus);
   router.get('/pricing', getPricing);
   router.get('/ipfs/seed', getIpfsSeed);
+  router.post('/pq/view', express.json(), postPqView);
   router.post('/pq/search', express.json(), postSearchPq);
   router.get('/pq/pub', getKyberPublicKey);
 

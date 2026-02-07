@@ -3,5 +3,6 @@ ipfs_data
 indexer_data
 node_api_data
 secrets
+.env
 *.sqlite
 *.log

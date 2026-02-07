@@ -1,3 +1,15 @@
+import { CONFIG } from '../config.js';
+
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isWalletSyntaxValid(wallet) {
+  const hrp = String(CONFIG.ADDR_HRP || 'lmn').trim() || 'lmn';
+  const re = new RegExp(`^${escapeRegex(hrp)}1[0-9a-z]+$`);
+  return re.test(String(wallet || '').trim());
+}
+
 export function extractWallet(req) {
   const headerWallet = req.header('X-Lumen-Addr')?.trim() || '';
   const ctxWallet =
@@ -9,18 +21,9 @@ export function extractWallet(req) {
     return { ok: false, error: 'wallet_required', message: 'wallet_required' };
   }
 
-  if (!/^lmn1[0-9a-z]+$/.test(wallet)) {
+  if (!isWalletSyntaxValid(wallet)) {
     return { ok: false, error: 'wallet_invalid', message: 'wallet_invalid' };
   }
 
   return { ok: true, wallet };
-}
-
-export function requireWallet(req, res) {
-  const result = extractWallet(req);
-  if (!result.ok) {
-    res.status(400).json({ error: result.error, message: result.message });
-    return null;
-  }
-  return result.wallet;
 }

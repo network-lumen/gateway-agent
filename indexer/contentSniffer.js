@@ -3,6 +3,12 @@ import { fetchWithTimeout, readResponseBodyLimited } from './utils.js';
 import { logError } from './log.js';
 import { tagImageWithClip } from './imageTagger.js';
 import { tagTextWithModel } from './textTagger.js';
+import {
+  extractDocxTextFromBytes,
+  extractEpubTextFromBytes,
+  extractPdfTextFromBytes,
+  extractPdfTextFromUrl
+} from './docExtractors.js';
 
 const SAMPLE_BYTES = 32 * 1024;
 
@@ -32,7 +38,6 @@ const STOPWORDS_EN = new Set([
   'file',
   'data',
   'content',
-  'video',
   'image',
   'site',
   'page',
@@ -111,6 +116,44 @@ async function readSampleBytes(cid, sizeHint) {
   };
 }
 
+async function readFullBytes(cid, maxBytes) {
+  const limit = typeof maxBytes === 'number' && maxBytes > 0 ? maxBytes : 0;
+  if (!limit) return null;
+
+  const url = new URL(`/ipfs/${cid}`, CONFIG.IPFS_GATEWAY_BASE).toString();
+
+  try {
+    const resp = await fetchWithTimeout(
+      url,
+      { method: 'GET' },
+      {
+        timeoutMs: CONFIG.DOC_EXTRACT_TIMEOUT_MS || CONFIG.REQUEST_TIMEOUT_MS,
+        retries: CONFIG.DOC_EXTRACT_RETRIES ?? 0
+      }
+    );
+    if (!resp.ok) return null;
+
+    const lenHeader = resp.headers?.get ? resp.headers.get('content-length') : null;
+    const contentLen = lenHeader ? Number.parseInt(String(lenHeader), 10) : null;
+    if (Number.isFinite(contentLen) && contentLen > limit) {
+      return { tooLarge: true, bytes: null, bytesRead: 0 };
+    }
+
+    const bytes = await readResponseBodyLimited(resp, limit);
+    // If we hit the cap, treat it as truncated and avoid parsing formats that require full bytes.
+    const lengthKnownAndWithinLimit =
+      Number.isFinite(contentLen) && contentLen >= 0 && contentLen <= limit;
+    if (bytes.length >= limit && !lengthKnownAndWithinLimit) {
+      return { tooLarge: true, bytes: null, bytesRead: bytes.length };
+    }
+
+    return { tooLarge: false, bytes, bytesRead: bytes.length };
+  } catch (err) {
+    logError('contentSniffer.readFullBytes error', cid, err?.message || err);
+    return null;
+  }
+}
+
 function normalizeText(bytes) {
   if (!bytes || !bytes.length) return '';
   try {
@@ -128,6 +171,167 @@ function normalizeText(bytes) {
   } catch {
     return '';
   }
+}
+
+function looksLikeUsefulHumanText(value) {
+  const s = String(value || '').trim();
+  if (!s) return false;
+  // Require at least some letters to avoid numeric junk like "123 456".
+  if (!/[a-z]/i.test(s)) return false;
+  // Avoid lines that are overwhelmingly punctuation.
+  const letters = (s.match(/[a-z]/gi) || []).length;
+  const nonSpace = (s.match(/\S/g) || []).length;
+  if (!nonSpace) return false;
+  return letters / nonSpace >= 0.15;
+}
+
+function looksLikePdfInternalText(rawText) {
+  const raw = String(rawText || '');
+  if (!raw) return false;
+  const sample = raw.slice(0, 8192).toLowerCase();
+
+  // xref-like tables: "0003756830 00000 n"
+  const xrefLineMatches = sample.match(/\b\d{6,12}\s+\d{5}\s+[nf]\b/g) || [];
+  if (xrefLineMatches.length >= 3) {
+    const nonXref = sample.replace(/[0-9nf\s]/g, '');
+    if (nonXref.length <= 10) return true;
+  }
+
+  const hasObjDecl = /\b\d+\s+\d+\s+obj\b/.test(sample);
+  const hasEndobj = sample.includes('endobj');
+  const hasXref = sample.includes('xref');
+  const hasTrailer = sample.includes('trailer');
+  const hasStream = sample.includes('stream');
+  const hasEndstream = sample.includes('endstream');
+
+  let score = 0;
+  if (hasObjDecl) score += 2;
+  if (hasEndobj) score += 1;
+  if (hasXref) score += 1;
+  if (hasTrailer) score += 1;
+  if (hasStream) score += 1;
+  if (hasEndstream) score += 1;
+
+  if (score >= 4) return true;
+
+  // Dictionary-heavy signature without explicit object header.
+  const hasFlate = sample.includes('flatedecode');
+  const hasXobject = sample.includes('xobject');
+  const hasColorspace = sample.includes('colorspace');
+  const hasBits = sample.includes('bitspercomponent');
+  const hasMediabox = sample.includes('mediabox');
+  const hasCropbox = sample.includes('cropbox');
+  const hasResources = sample.includes('resources');
+  const hasFont = sample.includes('font');
+
+  let dictScore = 0;
+  if (hasFlate) dictScore += 1;
+  if (hasXobject) dictScore += 1;
+  if (hasColorspace) dictScore += 1;
+  if (hasBits) dictScore += 1;
+  if (hasMediabox) dictScore += 1;
+  if (hasCropbox) dictScore += 1;
+  if (hasResources) dictScore += 1;
+  if (hasFont) dictScore += 1;
+
+  const hasStreamish = hasStream && hasEndstream;
+  return hasStreamish && dictScore >= 3;
+}
+
+function looksLikeZipContainerText(rawText) {
+  const raw = String(rawText || '');
+  if (!raw) return false;
+
+  // ZIP local file header signature ("PK\u0003\u0004") rendered as "PK" + control chars.
+  if (!raw.startsWith('PK')) return false;
+
+  const sample = raw.slice(0, 8192).toLowerCase();
+
+  // EPUB / Office containers often leak these strings early in the stream when decoded as UTF-8.
+  if (sample.includes('meta-inf/container.xml')) return true;
+  if (sample.includes('mimetypeapplication/epub+zip')) return true;
+  if (sample.includes('[content_types].xml')) return true;
+  if (sample.includes('_rels/.rels')) return true;
+  if (sample.includes('word/')) return true;
+  if (sample.includes('ppt/')) return true;
+  if (sample.includes('xl/')) return true;
+
+  return false;
+}
+
+function extractTextTitleAndDescription(
+  rawText,
+  { maxTitle = 120, maxDescription = 800, markdownTitleOnly = false } = {}
+) {
+  const raw = String(rawText || '');
+  const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return { title: null, description: null };
+
+  let title = null;
+
+  // Prefer markdown heading as title.
+  for (const line of lines.slice(0, 40)) {
+    const m = /^#{1,6}\s+(.+)$/.exec(line);
+    if (m && looksLikeUsefulHumanText(m[1])) {
+      title = m[1].trim();
+      break;
+    }
+  }
+
+  if (!title && !markdownTitleOnly) {
+    for (const line of lines.slice(0, 60)) {
+      if (!looksLikeUsefulHumanText(line)) continue;
+      title = line;
+      break;
+    }
+  }
+
+  if (title) {
+    title = title.replace(/\s+/g, ' ').trim();
+    if (title.length > maxTitle) title = `${title.slice(0, maxTitle).trimEnd()}…`;
+  }
+
+  // Description: first "useful" chunk, skipping a title-like line when possible.
+  const descParts = [];
+  const titleNormalized = title ? title.replace(/\s+/g, ' ').trim().toLowerCase() : null;
+
+  for (const line of lines.slice(0, 120)) {
+    const compact = line.replace(/\s+/g, ' ').trim();
+    if (!compact) continue;
+    if (titleNormalized && compact.toLowerCase() === titleNormalized) continue;
+    // Skip very short numeric / symbol lines.
+    if (compact.length < 4 && !/[a-z]/i.test(compact)) continue;
+
+    // Keep a few lines even if they are JSON-ish, as long as they include letters.
+    if (!looksLikeUsefulHumanText(compact)) continue;
+
+    descParts.push(compact);
+    if (descParts.join(' ').length >= maxDescription) break;
+    if (descParts.length >= 5) break;
+  }
+
+  let description = descParts.join(' ').replace(/\s+/g, ' ').trim();
+  if (description && description.length > maxDescription) {
+    description = `${description.slice(0, maxDescription).trimEnd()}…`;
+  }
+
+  if (description && !looksLikeUsefulHumanText(description)) {
+    description = null;
+  }
+
+  return { title: title || null, description: description || null };
+}
+
+function extractTextPreview(rawText, { maxChars = 600 } = {}) {
+  const raw = String(rawText || '');
+  if (!raw) return null;
+  const safe = raw
+    .replace(/\r/g, '\n')
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ' ');
+  const trimmed = safe.trim();
+  if (!trimmed) return null;
+  if (trimmed.length <= maxChars) return trimmed;
+  return `${trimmed.slice(0, maxChars).trimEnd()}…`;
 }
 
 function extractTokens(text, lang) {
@@ -168,15 +372,11 @@ function deriveTopics(tokenCounts) {
   return topics;
 }
 
-function mapContentClassFromKind(kind, { isSubtitles } = {}) {
+function mapContentClassFromKind(kind) {
   const k = String(kind || '').toLowerCase().trim();
   if (k === 'html') return 'site';
-  if (k === 'video') return 'video';
   if (k === 'image') return 'image';
-  if (k === 'text' || k === 'doc') {
-    if (isSubtitles) return 'video';
-    return 'doc';
-  }
+  if (k === 'text' || k === 'doc') return 'doc';
   return 'doc';
 }
 
@@ -284,6 +484,39 @@ function extractReadableTextFromHtml(html) {
   return strippedAgain.replace(/\s+/g, ' ').trim();
 }
 
+function looksLikeIpfsDirectoryListingHtml(html, { title, description, readable } = {}) {
+  const raw = String(html || '');
+  const lower = raw.toLowerCase();
+
+  // Kubo gateway directory listing contains this exact phrase.
+  if (lower.includes('a directory of content-addressed files hosted on ipfs')) return true;
+
+  const t = String(title || '').trim().toLowerCase();
+  const d = String(description || '').trim().toLowerCase();
+  const r = String(readable || '').trim().toLowerCase();
+
+  // Kubo uses "/ipfs/<cid>/" as the <title> for directory listings.
+  if (t.startsWith('/ipfs/')) return true;
+
+  if (d.includes('a directory of content-addressed files hosted on ipfs')) return true;
+
+  const hasIpfsPathMarker = lower.includes('/ipfs/');
+  const hasParentDirectory = r.includes('parent directory') || lower.includes('parent directory');
+  const hasHrefParent = lower.includes('href="../"') || lower.includes("href='../'");
+  const hasIndexOf =
+    t === 'index of' ||
+    t.startsWith('index of ') ||
+    r.includes('index of') ||
+    lower.includes('<h1>index of') ||
+    lower.includes('>index of<');
+
+  if (hasIpfsPathMarker && hasIndexOf && hasParentDirectory) return true;
+  if (hasIpfsPathMarker && (hasParentDirectory || hasHrefParent) && t.startsWith('/ipfs/')) return true;
+  if (hasIpfsPathMarker && (t.startsWith('index of ') || t === 'index of')) return true;
+
+  return false;
+}
+
 async function analyzeHtmlFromText(headText, tailText, lang, bytesRead) {
   const html = `${headText} ${tailText}`;
   const { title, description } = extractHtmlMetadata(html);
@@ -327,16 +560,19 @@ async function analyzeHtmlFromText(headText, tailText, lang, bytesRead) {
     if (!topics.includes(key)) topics.push(key);
   }
 
+  const isDirListing = looksLikeIpfsDirectoryListingHtml(html, { title, description, readable });
+  const content_class = isDirListing ? 'dir_listing' : 'site';
+
   return {
     topics,
     tokens,
     title: title || null,
     description: description || null,
-    content_class: 'site',
+    content_class,
     lang,
     confidence: 0.75,
     signals: {
-      from: ['html:content'],
+      from: [isDirListing ? 'html:dir_listing' : 'html:content'],
       bytes_read: bytesRead
     }
   };
@@ -349,6 +585,8 @@ async function analyzeTextFromSample(headBytes, lang, bytesRead) {
   const lines = raw.split(/\r?\n/).slice(0, 20);
   const joined = lines.join(' ');
   const modelText = joined.replace(/\s+/g, ' ').trim();
+  let { title, description } = extractTextTitleAndDescription(raw, { markdownTitleOnly: true });
+  let preview = extractTextPreview(raw);
   const normalized = normalizeText(Buffer.from(joined, 'utf8'));
   const tokenCounts = extractTokens(normalized, lang);
   const derived = deriveTopics(tokenCounts);
@@ -360,25 +598,37 @@ async function analyzeTextFromSample(headBytes, lang, bytesRead) {
 
   let topics = [];
 
-  try {
-    const aiTags = await tagTextWithModel(modelText || normalized);
-    if (aiTags && aiTags.tokens) {
-      for (const [k, v] of Object.entries(aiTags.tokens)) {
-        const key = String(k || '').trim().toLowerCase();
-        const val = Number(v);
-        if (!key || !Number.isFinite(val) || val <= 0) continue;
-        tokens[key] = (tokens[key] || 0) + val;
+  const lowSignal =
+    !looksLikeUsefulHumanText(modelText) ||
+    looksLikePdfInternalText(raw) ||
+    looksLikeZipContainerText(raw);
+
+  if (lowSignal) {
+    title = null;
+    description = null;
+  }
+
+  if (!lowSignal) {
+    try {
+      const aiTags = await tagTextWithModel(modelText || normalized);
+      if (aiTags && aiTags.tokens) {
+        for (const [k, v] of Object.entries(aiTags.tokens)) {
+          const key = String(k || '').trim().toLowerCase();
+          const val = Number(v);
+          if (!key || !Number.isFinite(val) || val <= 0) continue;
+          tokens[key] = (tokens[key] || 0) + val;
+        }
       }
-    }
-    if (aiTags && Array.isArray(aiTags.topics)) {
-      for (const t of aiTags.topics) {
-        const key = String(t || '').trim().toLowerCase();
-        if (!key) continue;
-        if (!topics.includes(key)) topics.push(key);
+      if (aiTags && Array.isArray(aiTags.topics)) {
+        for (const t of aiTags.topics) {
+          const key = String(t || '').trim().toLowerCase();
+          if (!key) continue;
+          if (!topics.includes(key)) topics.push(key);
+        }
       }
+    } catch (err) {
+      logError('contentSniffer.analyzeText text tag enrichment error', err?.message || err);
     }
-  } catch (err) {
-    logError('contentSniffer.analyzeText text tag enrichment error', err?.message || err);
   }
 
   for (const t of derived) {
@@ -387,18 +637,20 @@ async function analyzeTextFromSample(headBytes, lang, bytesRead) {
     if (!topics.includes(key)) topics.push(key);
   }
 
-  const isSubtitles = lines.some((line) => line.includes('-->'));
-  const content_class = mapContentClassFromKind('text', { isSubtitles });
+  const content_class = mapContentClassFromKind('text');
   const confidence = 0.6;
 
   return {
     topics,
     tokens,
+    title,
+    description,
+    preview,
     content_class,
     lang,
     confidence,
     signals: {
-      from: ['text:head'],
+      from: [lowSignal ? 'text:head:low_signal' : 'text:head'],
       bytes_read: bytesRead
     }
   };
@@ -465,48 +717,73 @@ async function analyzeImage(detection, bytesRead, lang, cidForTags) {
   };
 }
 
-function analyzeVideo(detection, bytesRead, lang) {
-  const tokensMap = new Map();
-  tokensMap.set('video', (tokensMap.get('video') || 0) + 1);
+async function analyzeDocFromExtractedText(extractedText, lang, bytesRead, { title, description, from } = {}) {
+  const text = String(extractedText || '').trim();
+  const hasMeta =
+    (typeof title === 'string' && title.trim()) ||
+    (typeof description === 'string' && description.trim());
+  if (!text && !hasMeta) return null;
 
-  const containerType = detection.signals?.container?.type;
-  if (containerType) {
-    const key = String(containerType || '').toLowerCase().trim();
-    if (key) tokensMap.set(key, (tokensMap.get(key) || 0) + 1);
-  }
+  const derivedMeta = text ? extractTextTitleAndDescription(text) : { title: null, description: null };
+  const finalTitle = title || derivedMeta.title;
+  const finalDescription = description || derivedMeta.description;
 
-  if (detection.filename) {
-    const norm = normalizeText(
-      Buffer.from(String(detection.filename), 'utf8')
-    );
-    const fileTokens = extractTokens(norm, lang);
-    for (const [t, c] of fileTokens.entries()) {
-      if (!t) continue;
-      tokensMap.set(t, (tokensMap.get(t) || 0) + c);
-    }
-  }
-
-  const ext = String(detection.ext_guess || '').toLowerCase().trim();
-  if (ext === 'mp4') tokensMap.set('mp4', (tokensMap.get('mp4') || 0) + 1);
-  if (ext === 'm3u8') tokensMap.set('hls', (tokensMap.get('hls') || 0) + 1);
-
-  const content_class = 'video';
-  const confidence = 0.75;
-  const fromSignals = ['kind:video'];
-
-  const topics = deriveTopics(tokensMap);
+  const tokenSource = text || [finalTitle, finalDescription].filter(Boolean).join(' ').trim();
+  const normalized = normalizeText(Buffer.from(tokenSource, 'utf8'));
+  const tokenCounts = extractTokens(normalized, lang);
+  const derived = deriveTopics(tokenCounts);
   const tokens = {};
-  for (const [t, c] of tokensMap.entries()) {
+  for (const [t, c] of tokenCounts.entries()) {
     if (!t) continue;
     tokens[t] = c;
+  }
+
+  let topics = [];
+
+  try {
+    const modelText = [finalTitle, finalDescription, text ? text.slice(0, 2000) : null]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+    const aiTags = await tagTextWithModel(modelText || normalized);
+    if (aiTags && aiTags.tokens) {
+      for (const [k, v] of Object.entries(aiTags.tokens)) {
+        const key = String(k || '').trim().toLowerCase();
+        const val = Number(v);
+        if (!key || !Number.isFinite(val) || val <= 0) continue;
+        tokens[key] = (tokens[key] || 0) + val;
+      }
+    }
+    if (aiTags && Array.isArray(aiTags.topics)) {
+      for (const t of aiTags.topics) {
+        const key = String(t || '').trim().toLowerCase();
+        if (!key) continue;
+        if (!topics.includes(key)) topics.push(key);
+      }
+    }
+  } catch (err) {
+    logError('contentSniffer.analyzeDoc text tag enrichment error', err?.message || err);
+  }
+
+  for (const t of derived) {
+    const key = String(t || '').trim().toLowerCase();
+    if (!key) continue;
+    if (!topics.includes(key)) topics.push(key);
+  }
+
+  const fromSignals = Array.isArray(from) ? [...from] : ['doc:fulltext'];
+  if (!text && hasMeta && !fromSignals.includes('doc:metadata_only')) {
+    fromSignals.unshift('doc:metadata_only');
   }
 
   return {
     topics,
     tokens,
-    content_class,
+    title: finalTitle || null,
+    description: finalDescription || null,
+    content_class: 'doc',
     lang,
-    confidence,
+    confidence: text ? 0.75 : 0.65,
     signals: {
       from: fromSignals,
       bytes_read: bytesRead
@@ -519,7 +796,7 @@ export async function analyzeContentForCid(cid, detection) {
   const size = detection.size;
   const lang = 'en';
 
-  if (kind !== 'html' && kind !== 'text' && kind !== 'doc' && kind !== 'image' && kind !== 'video') {
+  if (kind !== 'html' && kind !== 'text' && kind !== 'doc' && kind !== 'image') {
     return null;
   }
 
@@ -539,7 +816,141 @@ export async function analyzeContentForCid(cid, detection) {
     return analyzeHtmlFromText(headText, tailText, lang, bytesRead);
   }
 
-  if (kind === 'text' || kind === 'doc') {
+  if (kind === 'doc') {
+    const maxBytes = CONFIG.DOC_EXTRACT_MAX_BYTES;
+    const maxChars = CONFIG.DOC_EXTRACT_MAX_CHARS;
+    const ext = String(detection.ext_guess || '').trim().toLowerCase();
+    const mime = String(detection.mime || '').trim().toLowerCase();
+
+    const maybeParseFull =
+      ext === 'pdf' ||
+      ext === 'docx' ||
+      ext === 'epub' ||
+      mime.includes('pdf') ||
+      mime.includes('epub') ||
+      mime.includes('wordprocessingml');
+
+    let skippedTooLarge = false;
+    let fullFetchFailed = false;
+    let pdfUrlExtractFailed = false;
+    let epubParseFailed = false;
+
+    if (maybeParseFull) {
+      try {
+        // PDF: prefer range-based extraction via URL to avoid full downloads on large files.
+        if (ext === 'pdf' || mime.includes('pdf')) {
+          const url = new URL(`/ipfs/${cid}`, CONFIG.IPFS_GATEWAY_BASE).toString();
+          try {
+            const parsed = await extractPdfTextFromUrl(url, {
+              maxChars,
+              maxPages: CONFIG.PDF_EXTRACT_MAX_PAGES,
+              timeoutMs: CONFIG.DOC_EXTRACT_TIMEOUT_MS
+            });
+            const meta = await analyzeDocFromExtractedText(parsed.text, lang, bytesRead, {
+              title: parsed.title,
+              description: parsed.description,
+              from: ['doc:pdf_text']
+            });
+            if (meta) return meta;
+          } catch (err) {
+            pdfUrlExtractFailed = true;
+            logError('contentSniffer.analyzeDoc pdf url extract error', cid, err?.message || err);
+          }
+        }
+      } catch (err) {
+        logError('contentSniffer.analyzeDoc pdf url extract wrapper error', cid, err?.message || err);
+      }
+
+      const full = await readFullBytes(cid, maxBytes);
+      if (!full) {
+        fullFetchFailed = true;
+      } else if (full && full.tooLarge) {
+        skippedTooLarge = true;
+      }
+      if (full && !full.tooLarge && full.bytes && full.bytes.length) {
+        if (ext === 'pdf' || mime.includes('pdf')) {
+          try {
+            const parsed = await extractPdfTextFromBytes(full.bytes, {
+              maxChars,
+              maxPages: CONFIG.PDF_EXTRACT_MAX_PAGES,
+              timeoutMs: CONFIG.DOC_EXTRACT_TIMEOUT_MS
+            });
+            const meta = await analyzeDocFromExtractedText(parsed.text, lang, full.bytesRead, {
+              title: parsed.title,
+              description: parsed.description,
+              from: ['doc:pdf_text']
+            });
+            if (meta) return meta;
+          } catch (err) {
+            logError('contentSniffer.analyzeDoc pdf parse error', cid, err?.message || err);
+          }
+        }
+
+        if (ext === 'docx' || mime.includes('wordprocessingml')) {
+          try {
+            const parsed = await extractDocxTextFromBytes(full.bytes, { maxChars });
+            const meta = await analyzeDocFromExtractedText(parsed.text, lang, full.bytesRead, {
+              title: parsed.title,
+              description: parsed.description,
+              from: ['doc:docx_text']
+            });
+            if (meta) return meta;
+          } catch (err) {
+            logError('contentSniffer.analyzeDoc docx parse error', cid, err?.message || err);
+          }
+        }
+
+        if (ext === 'epub' || mime.includes('epub')) {
+          try {
+            const parsed = await extractEpubTextFromBytes(full.bytes, {
+              maxChars,
+              maxFiles: CONFIG.EPUB_EXTRACT_MAX_FILES
+            });
+            const meta = await analyzeDocFromExtractedText(parsed.text, lang, full.bytesRead, {
+              title: parsed.title,
+              description: parsed.description,
+              from: ['doc:epub_text', 'doc:epub_text_v2']
+            });
+            if (meta) return meta;
+          } catch (err) {
+            epubParseFailed = true;
+            logError('contentSniffer.analyzeDoc epub parse error', cid, err?.message || err);
+          }
+        }
+      }
+    }
+
+    const fallback = await analyzeTextFromSample(sample.headBytes, lang, bytesRead);
+    if (fallback && fallback.signals && Array.isArray(fallback.signals.from)) {
+      if (!fallback.signals.from.includes('doc:sample')) {
+        fallback.signals.from.unshift('doc:sample');
+      }
+      if (skippedTooLarge) {
+        const marker = `doc:too_large:max=${maxBytes}`;
+        if (!fallback.signals.from.includes(marker)) {
+          fallback.signals.from.unshift(marker);
+        }
+      }
+      if (fullFetchFailed) {
+        if (!fallback.signals.from.includes('doc:full_fetch_failed')) {
+          fallback.signals.from.unshift('doc:full_fetch_failed');
+        }
+      }
+      if (pdfUrlExtractFailed) {
+        if (!fallback.signals.from.includes('doc:pdf_url_extract_failed')) {
+          fallback.signals.from.unshift('doc:pdf_url_extract_failed');
+        }
+      }
+      if (epubParseFailed) {
+        if (!fallback.signals.from.includes('doc:epub_parse_failed')) {
+          fallback.signals.from.unshift('doc:epub_parse_failed');
+        }
+      }
+    }
+    return fallback;
+  }
+
+  if (kind === 'text') {
     return analyzeTextFromSample(sample.headBytes, lang, bytesRead);
   }
 
@@ -547,11 +958,7 @@ export async function analyzeContentForCid(cid, detection) {
     return analyzeImage(detection, bytesRead, lang, cid);
   }
 
-  if (kind === 'video') {
-    return analyzeVideo(detection, bytesRead, lang);
-  }
-
   return null;
 }
 
-export { readSampleBytes, normalizeText, extractTokens, deriveTopics, mapContentClassFromKind };
+export { mapContentClassFromKind };

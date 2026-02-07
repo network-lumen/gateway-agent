@@ -1,4 +1,7 @@
 import crypto from 'node:crypto';
+import { once } from 'node:events';
+import fs from 'node:fs';
+import path from 'node:path';
 import { kuboRequest } from '../lib/kuboClient.js';
 import { recordIngest } from '../lib/walletRegistry.js';
 import { sendWebhookEvent } from '../lib/webhook.js';
@@ -12,6 +15,15 @@ const ingestTokens = new Map();
 const MAX_CAR_BYTES = Number.isFinite(Number(CONFIG.INGEST_MAX_BYTES))
   ? Number(CONFIG.INGEST_MAX_BYTES)
   : 500 * 1024 * 1024;
+
+const DEFAULT_WALLET_DB_PATH = '/data/node_api/wallets.sqlite';
+const WALLET_DB_PATH =
+  process.env.NODE_API_WALLET_DB_PATH && process.env.NODE_API_WALLET_DB_PATH.trim()
+    ? process.env.NODE_API_WALLET_DB_PATH.trim()
+    : DEFAULT_WALLET_DB_PATH;
+const DEFAULT_INGEST_TMP_DIR = path.join(path.dirname(WALLET_DB_PATH), 'ingest_tmp');
+const INGEST_TMP_DIR = String(process.env.INGEST_TMP_DIR || DEFAULT_INGEST_TMP_DIR).trim()
+  || DEFAULT_INGEST_TMP_DIR;
 
 function cleanupTokens() {
   const now = Date.now();
@@ -132,7 +144,28 @@ export async function postIngestCar(req, res) {
     const fileCt = req.header('Content-Type') || 'application/car';
     let uploadedBytes = 0;
     let tooLarge = false;
-    const chunks = [];
+
+    // Spool to disk to avoid buffering large uploads in RAM.
+    let tmpFile = null;
+    try {
+      fs.mkdirSync(INGEST_TMP_DIR, { recursive: true });
+      const name = `upload-${Date.now()}-${crypto.randomBytes(8).toString('hex')}.car`;
+      tmpFile = path.join(INGEST_TMP_DIR, name);
+    } catch (mkErr) {
+      // eslint-disable-next-line no-console
+      console.error('[api:/ingest/car] failed to create tmp dir', {
+        dir: INGEST_TMP_DIR,
+        error: mkErr?.message || String(mkErr)
+      });
+      return res.status(500).json({ error: 'internal_error' });
+    }
+
+    const ws = fs.createWriteStream(tmpFile, { flags: 'wx' });
+    const writeDone = new Promise((resolve, reject) => {
+      ws.on('finish', resolve);
+      ws.on('error', reject);
+    });
+
     for await (const chunk of req) {
       if (!chunk) continue;
       const buf =
@@ -140,24 +173,25 @@ export async function postIngestCar(req, res) {
       uploadedBytes += buf.length;
       if (MAX_CAR_BYTES && uploadedBytes > MAX_CAR_BYTES) {
         tooLarge = true;
-        // continue draining the stream but do not store additional chunks
+        // Continue draining the stream but do not write additional bytes.
         continue;
       }
-      if (!tooLarge) {
-        chunks.push(buf);
-      }
+      if (!ws.write(buf)) await once(ws, 'drain');
     }
 
+    ws.end();
+    await writeDone;
+
     if (tooLarge) {
+      try { await fs.promises.unlink(tmpFile); } catch {}
       return res.status(413).json({
         error: 'car_too_large',
         max_bytes: MAX_CAR_BYTES
       });
     }
 
-    const carBuffer = Buffer.concat(chunks);
-
     const jobId = enqueueIngestJob(async () => {
+      try {
       const boundary = `----lumenFormBoundary${Math.random()
         .toString(16)
         .slice(2)}`;
@@ -172,7 +206,9 @@ export async function postIngestCar(req, res) {
 
       async function* multipartStream() {
         yield pre;
-        yield carBuffer;
+        for await (const buf of fs.createReadStream(tmpFile)) {
+          yield buf;
+        }
         yield post;
       }
 
@@ -181,7 +217,8 @@ export async function postIngestCar(req, res) {
         headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
         // @ts-ignore duplex is still experimental in Node
         duplex: 'half',
-        body: multipartStream()
+        body: multipartStream(),
+        timeoutMs: CONFIG.KUBO_IMPORT_TIMEOUT_MS
       });
 
       const text = await resp.text();
@@ -224,6 +261,9 @@ export async function postIngestCar(req, res) {
         ...meta,
         roots: uniqueRoots
       });
+      } finally {
+        try { await fs.promises.unlink(tmpFile); } catch {}
+      }
     }, { bytes: uploadedBytes });
 
     res.json({

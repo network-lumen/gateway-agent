@@ -18,25 +18,15 @@ The goal is a minimal but production‑ready way to operate an IPFS gateway with
 ## 1. Repository layout
 
 - `node_api/`
-  - `src/server.js` – Express bootstrap.
-  - `src/routes/index.js` – public + admin routes.
-  - `src/controllers/*` – HTTP handlers (`/pin`, `/wallet/usage`, `/wallet/cids`, `/search`, `/metrics`, etc.).
-  - `src/middleware/authWallet.js` – wallet auth + PQ envelope decryption.
-  - `src/lib/*` – IPFS client, indexer client, wallet DB, chain client, webhook client, Kyber key context.
-  - `scripts/gen_kyber_key.js` – CLI to generate a Kyber keypair and on‑chain metadata.
 - `indexer/`
-  - `config.js` – indexer configuration (Kubo endpoints, timing, sampling limits).
-  - `detectType.js` – type detector (magic bytes + containers + heuristics).
-  - `contentSniffer.js` – HTML/text/doc/image/video content analysis.
-  - `textTagger.js` – text topics/tokens via `@xenova/transformers`.
-  - `imageTagger.js` – CLIP zero‑shot image tags via `@xenova/transformers`.
-  - `metrics.js` / `httpMetrics.js` – Prometheus metrics for the indexer.
 - `grafana/` – dashboards and provisioning for Grafana.
 - `prometheus.yml` – minimal Prometheus config scraping node_api + indexer.
 - `docker-compose.yml` – reference stack (ipfs + indexer + node_api + prometheus + grafana).
 - `config.json` – gateway configuration (operator address, region/public URL, pricing, webhook).
 
-For detailed behavior of the node API, see `node_api/README.md`. For the indexer internals, see `indexer/README.md`.
+For detailed behavior of the node API, see `node_api/README.md`. 
+For the indexer internals, see `indexer/README.md`.
+For operator UI management (Browser), see `docs/operator-gateway-management.md`.
 
 ---
 
@@ -46,6 +36,9 @@ From a clone of this repository on a Linux host:
 
 ```bash
 cd /path/to/gateway-agent
+
+# Optional: copy environment template
+cp .env.example .env
 
 # 1) Prepare host directories
 sudo mkdir -p /opt/lumen/gateway/ipfs_data
@@ -70,23 +63,28 @@ cd ..
 docker compose up --build
 ```
 
+Note: Prefer **Docker Compose v2** (`docker compose`, no hyphen). Legacy `docker-compose` (v1) can crash on newer Docker engines with errors like `KeyError: 'ContainerConfig'` when it tries to recreate containers. 
+Workaround: remove the old container first (e.g. `docker rm -f gateway-agent_node_api_1`) then re-run `docker-compose up -d --build node_api` (or install the Compose v2 plugin).
+
 The reference `docker-compose.yml` wires volumes and ports as follows:
 
 - Kubo:
   - host: `/opt/lumen/gateway/ipfs_data` → container: `/data/ipfs`,
-  - host ports: `5001` (Kubo API), `18080` (Kubo gateway).
+  - host ports (localhost only by default): `5001` (Kubo API), `18080` (Kubo gateway).
 - indexer:
   - host: `/opt/lumen/gateway/indexer_data` → container: `/data`,
-  - host port: `8790`.
+  - host port (localhost only by default): `8790`.
 - node_api:
   - host: `./config.json` → container: `/app/config.json` (read‑only),
   - host: `/opt/lumen/gateway/ipfs_data` → container: `/data/ipfs` (read‑only),
   - host: `/opt/lumen/gateway/node_api_data` → container: `/data/node_api`,
   - host: `/opt/lumen/gateway/secrets/kyber.json` → container: `/secrets/kyber.json` (read‑only),
   - env: `NODE_API_WALLET_DB_PATH=/data/node_api/wallets.sqlite`,
-  - env: `CHAIN_REST_BASE_URL=http://142.132.201.187:1317`,
+  - env: `CHAIN_REST_BASE_URL=http://YOUR-CHAIN-NODE:1317`,
   - env: `LUMEN_GATEWAY_KYBER_KEY_PATH=/secrets/kyber.json`,
   - host port: `8787` (public gateway API).
+
+Note: port binds for internal services can be overridden via `.env` (e.g. `KUBO_API_BIND`, `KUBO_GATEWAY_BIND`, `INDEXER_BIND`, `GRAFANA_BIND`).
 
 ### 2.1 Health checks
 
@@ -106,10 +104,10 @@ curl -s http://localhost:8787/pq/pub | jq .
 curl -s http://localhost:8790/metrics | head -n5
 ```
 
-From a remote machine (using the public IP `91.99.166.223` in this example):
+From a remote machine
 
 ```bash
-curl -s http://91.99.166.223:8787/status | jq .
+curl -s http://${PUBLIC_IP}:8787/status | jq .
 ```
 
 If you use `ufw`, a minimal firewall setup is:
@@ -140,13 +138,28 @@ Typical changes:
 - keep `NODE_API_WALLET_DB_PATH` and `LUMEN_GATEWAY_KYBER_KEY_PATH` aligned with the volumes you mount,
 - update `config.json` (at the repo root) with your `operator.address` (and optionally `region` / `public` if you prefer file-based config),
 - optionally set `REGION` and `PUBLIC_ENDPOINT` env vars to override `config.json` without editing it (use a `.env` file with Docker Compose).
+- optionally configure timeouts / ML cache (see `.env.example`).
 
 Example `.env`:
 
 ```env
 REGION=eu-west
 PUBLIC_ENDPOINT=http://<ip>:8787
+CHAIN_REST_BASE_URL=http://YOUR-CHAIN-NODE:1317
 ```
+
+### 2.3 Indexer ML models (optional)
+
+The indexer uses `@xenova/transformers` for text and image tagging. For production deployments:
+
+- configure a persistent cache directory via `TRANSFORMERS_CACHE_DIR` (see `.env.example`),
+- optionally prefetch the models once:
+
+```bash
+docker compose run --rm indexer npm run prefetch-models
+```
+
+To disable model downloads entirely after prefetch, set `TRANSFORMERS_LOCAL_FILES_ONLY=1` and keep the cache volume mounted.
 
 ---
 
@@ -230,7 +243,7 @@ curl -s http://localhost:8787/pq/pub | jq .
 
 ## 4. Determinism and gateway integrity
 
-Given the same pinned CIDs, software version and configuration, two independent `gateway-agent` deployments will converge to the same content types, tags and search results for a given query. All ranking and classification is derived from on‑disk bytes (plus deterministic models and heuristics); there is no hidden per‑user state, click tracking or popularity signal.
+Given the same pinned CIDs, software version and configuration, two independent `gateway-agent` deployments will converge to the same content types, tags and search results for a given query. All ranking and classification is derived from on‑disk bytes (plus deterministic models and heuristics)
 
 This means the integrity of a gateway can be audited with equivalent data: if two operators ingest the same CARs/pins and keep the same configuration, their public `/search` (and related) responses should match within normal limits. Any moderation or policy layer (for example, blocking clearly illegal content) is expected to be implemented as an explicit, documented layer on top of the gateway; the reference implementation does not include a “silent” censorship path.
 
@@ -240,9 +253,4 @@ This means the integrity of a gateway can be audited with equivalent data: if tw
 
 - **node API internals and PQ transport** – see `node_api/README.md` for a detailed description of endpoints, PQ envelopes, and wallet usage reporting.
 - **Indexer internals and tagging** – see `indexer/README.md` for content sniffing, type detection, tagging, and metrics.
-- **Browser client** – the companion Electron app (in `browser/browser`) shows how to:
-  - resolve gateway endpoints from on‑chain DNS,
-  - enforce Kyber pubkey hash checks,
-  - send PQ‑encrypted authWallet requests for `/wallet/usage`, `/wallet/cids`, `/pin`, `/unpin`, `/ispinned`, `/ingest/*`,
-  - surface usage, plans and pinned state in a UI.
-
+- **Managing your gateway on-chain from the browser** – see `docs/operator-gateway-management.md`.

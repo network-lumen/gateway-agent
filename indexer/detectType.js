@@ -5,13 +5,11 @@ import { incrementIpfsRangeIgnored } from './metrics.js';
 import { log, logError } from './log.js';
 
 // Bump when detection + content analysis logic changes (e.g., AI tags, HTML text extraction).
-export const DETECTOR_VERSION = 'type-v3';
+export const DETECTOR_VERSION = 'v1';
 
 function kindFromMime(mime) {
   if (!mime) return 'unknown';
   if (mime.startsWith('image/')) return 'image';
-  if (mime.startsWith('video/')) return 'video';
-  if (mime.startsWith('audio/')) return 'audio';
   if (mime === 'text/html' || mime === 'application/xhtml+xml') return 'html';
   if (mime.startsWith('text/')) return 'text';
   if (
@@ -46,108 +44,6 @@ function magicConfidenceForMime(mime) {
 function bufferToText(buf) {
   if (!buf || buf.length === 0) return '';
   return buf.toString('utf8').toLowerCase();
-}
-
-function parseMp4DurationSecondsFromBuffer(buf) {
-  if (!buf || buf.length < 32) return null;
-  const len = buf.length;
-
-  for (let i = 0; i <= len - 16; i += 1) {
-    const size = buf.readUInt32BE(i);
-    if (size && size < 16) continue;
-
-    if (
-      buf[i + 4] === 0x6d &&
-      buf[i + 5] === 0x76 &&
-      buf[i + 6] === 0x68 &&
-      buf[i + 7] === 0x64
-    ) {
-      const version = buf[i + 8];
-
-      if (version === 0) {
-        const needed = i + 28;
-        if (needed > len) continue;
-        const timescale = buf.readUInt32BE(i + 20);
-        const duration = buf.readUInt32BE(i + 24);
-        if (!timescale || !duration) continue;
-        if (timescale > 1000000) continue;
-        const seconds = duration / timescale;
-        if (!Number.isFinite(seconds) || seconds <= 0) continue;
-        return seconds;
-      }
-
-      if (version === 1 && typeof buf.readBigUInt64BE === 'function') {
-        const needed = i + 44;
-        if (needed > len) continue;
-        const timescale = buf.readUInt32BE(i + 28);
-        const durationBig = buf.readBigUInt64BE(i + 32);
-        if (!timescale || durationBig === 0n) continue;
-        if (timescale > 1000000) continue;
-        const seconds = Number(durationBig / BigInt(timescale));
-        if (!Number.isFinite(seconds) || seconds <= 0) continue;
-        return seconds;
-      }
-    }
-  }
-
-  return null;
-}
-
-function detectVideoMetadata({ sample, size, mime, ext_guess }) {
-  const kindMime = mime || '';
-  const ext = (ext_guess || '').toLowerCase().trim();
-
-  const maxSize =
-    typeof CONFIG.VIDEO_METADATA_MAX_SIZE_BYTES === 'number' &&
-    CONFIG.VIDEO_METADATA_MAX_SIZE_BYTES > 0
-      ? CONFIG.VIDEO_METADATA_MAX_SIZE_BYTES
-      : 30 * 1024 * 1024 * 1024;
-
-  if (typeof size === 'number' && size > 0 && size > maxSize) {
-    return null;
-  }
-
-  const isMp4Like =
-    kindMime === 'video/mp4' ||
-    ext === 'mp4' ||
-    ext === 'm4v' ||
-    ext === 'mov';
-
-  if (!isMp4Like) return null;
-
-  const candidates = [];
-  if (sample.head && sample.head.length) candidates.push(sample.head);
-  if (sample.tail && sample.tail.length) candidates.push(sample.tail);
-  if (sample.mid && sample.mid.length) candidates.push(sample.mid);
-
-  let seconds = null;
-  for (const buf of candidates) {
-    seconds = parseMp4DurationSecondsFromBuffer(buf);
-    if (seconds != null) break;
-  }
-
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    return null;
-  }
-
-  const maxDurationSeconds =
-    typeof CONFIG.VIDEO_METADATA_MAX_DURATION_SECONDS === 'number' &&
-    CONFIG.VIDEO_METADATA_MAX_DURATION_SECONDS > 0
-      ? CONFIG.VIDEO_METADATA_MAX_DURATION_SECONDS
-      : 3 * 60 * 60;
-
-  if (seconds > maxDurationSeconds) {
-    return null;
-  }
-
-  const durationMs = Math.round(seconds * 1000);
-
-  return {
-    kind: 'video',
-    container: 'mp4',
-    duration_seconds: seconds,
-    duration_ms: durationMs
-  };
 }
 
 function detectContainer({ head, tail, mid, size }) {
@@ -225,30 +121,6 @@ function detectContainer({ head, tail, mid, size }) {
     };
   }
 
-  // MP4/MOV - ftyp box near start + moov somewhere later
-  if (head && head.length >= 12) {
-    const brand = head.subarray(4, 8).toString('ascii');
-    if (brand === 'ftyp') {
-      const major = head.subarray(8, 12).toString('ascii');
-      const tailHasMoov = tailText.includes('moov');
-      const confidence = tailHasMoov ? 0.93 : 0.88;
-      const signalsMp4 = {
-        type: 'mp4',
-        brand: major.trim(),
-        tailMoov: tailHasMoov
-      };
-      signals.container = signalsMp4;
-      return {
-        mime: 'video/mp4',
-        ext_guess: 'mp4',
-        kind: 'video',
-        confidence,
-        source: 'container',
-        signals
-      };
-    }
-  }
-
   // HTML sniff
   if (
     headText.includes('<html') ||
@@ -303,7 +175,68 @@ function isMostlyText(buf) {
   return ascii / len > 0.8;
 }
 
-async function resolveSize(cid) {
+function looksLikePdfObjectStreamText(buf) {
+  if (!buf || !buf.length) return false;
+  const sample = buf.subarray(0, Math.min(buf.length, 8192)).toString('utf8');
+  const lower = sample.toLowerCase();
+
+  // PDF xref tables can be almost pure numbers: "0024721696 00000 n"
+  const xrefLineMatches = lower.match(/\b\d{6,12}\s+\d{5}\s+[nf]\b/g) || [];
+  if (xrefLineMatches.length >= 3) {
+    const nonXref = lower.replace(/[0-9nf\s]/g, '');
+    if (nonXref.length <= 10) return true;
+  }
+
+  const hasObjDecl = /\b\d+\s+\d+\s+obj\b/.test(lower);
+  const hasEndobj = lower.includes('endobj');
+  const hasXref = lower.includes('xref');
+  const hasTrailer = lower.includes('trailer');
+  const hasStream = lower.includes('stream');
+  const hasEndstream = lower.includes('endstream');
+
+  let score = 0;
+  if (hasObjDecl) score += 2;
+  if (hasEndobj) score += 1;
+  if (hasXref) score += 1;
+  if (hasTrailer) score += 1;
+  if (hasStream) score += 1;
+  if (hasEndstream) score += 1;
+
+  if (score >= 4) return true;
+
+  // Fallback: PDFs often expose internal dictionaries in text-like streams.
+  // Accept a "dictionary-heavy" signature even if the object header isn't present in the sample.
+  const hasFlate = lower.includes('flatedecode');
+  const hasXobject = lower.includes('xobject');
+  const hasColorspace = lower.includes('colorspace');
+  const hasBits = lower.includes('bitspercomponent');
+  const hasMediabox = lower.includes('mediabox');
+  const hasCropbox = lower.includes('cropbox');
+  const hasResources = lower.includes('resources');
+  const hasFont = lower.includes('font');
+
+  let dictScore = 0;
+  if (hasFlate) dictScore += 1;
+  if (hasXobject) dictScore += 1;
+  if (hasColorspace) dictScore += 1;
+  if (hasBits) dictScore += 1;
+  if (hasMediabox) dictScore += 1;
+  if (hasCropbox) dictScore += 1;
+  if (hasResources) dictScore += 1;
+  if (hasFont) dictScore += 1;
+
+  const hasStreamish = hasStream && hasEndstream;
+  return hasStreamish && dictScore >= 3;
+}
+
+function normalizeMimeHeader(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return null;
+  const primary = raw.split(';')[0]?.trim();
+  return primary || null;
+}
+
+async function probeHead(cid) {
   const url = new URL(`/ipfs/${cid}`, CONFIG.IPFS_GATEWAY_BASE).toString();
   try {
     const resp = await fetchWithTimeout(
@@ -312,12 +245,20 @@ async function resolveSize(cid) {
       { retries: 1 }
     );
     if (!resp.ok) return null;
+
     const lenHeader = resp.headers.get('content-length');
-    if (!lenHeader) return null;
-    const size = Number.parseInt(lenHeader, 10);
-    return Number.isFinite(size) && size >= 0 ? size : null;
+    const size = lenHeader ? Number.parseInt(lenHeader, 10) : null;
+    const sizeBytes =
+      Number.isFinite(size) && size >= 0 ? size : null;
+
+    const contentType = normalizeMimeHeader(resp.headers.get('content-type'));
+
+    return {
+      sizeBytes,
+      contentType
+    };
   } catch (err) {
-    logError('HEAD size probe failed for cid', cid, err);
+    logError('HEAD probe failed for cid', cid, err);
     return null;
   }
 }
@@ -429,14 +370,18 @@ async function sampleCid(cid, size) {
 
 function buildFallback(head, size) {
   const textLike = isMostlyText(head);
-  const mime = textLike ? 'text/plain' : 'application/octet-stream';
+  const looksLikePdfObject = textLike && looksLikePdfObjectStreamText(head);
+  const mime =
+    textLike && !looksLikePdfObject
+      ? 'text/plain'
+      : 'application/octet-stream';
   return {
     mime,
-    ext_guess: textLike ? 'txt' : null,
-    kind: textLike ? 'text' : 'unknown',
-    confidence: textLike ? 0.7 : 0.4,
+    ext_guess: textLike && !looksLikePdfObject ? 'txt' : null,
+    kind: textLike && !looksLikePdfObject ? 'text' : 'unknown',
+    confidence: textLike && !looksLikePdfObject ? 0.7 : 0.4,
     source: 'heuristic',
-    signals: { heuristic: { textLike, size } }
+    signals: { heuristic: { textLike, size, pdf_object_syntax: looksLikePdfObject } }
   };
 }
 
@@ -515,12 +460,45 @@ export async function detectTypeForCid(cid, opts = {}) {
   const warnings = [];
   const startMs = nowMs();
 
+  const head = await probeHead(cid);
+
   let size = opts.sizeBytes;
   if (typeof size !== 'number' || size < 0) {
-    size = await resolveSize(cid);
-    if (size == null) {
-      warnings.push('size_unknown');
-    }
+    size = head?.sizeBytes ?? null;
+  }
+  if (size == null) {
+    warnings.push('size_unknown');
+  }
+
+  const headMime = head?.contentType ?? null;
+  if (headMime && (headMime.startsWith('video/') || headMime.startsWith('audio/'))) {
+    warnings.push('excluded_media');
+
+    return {
+      cid,
+      mime: headMime,
+      ext_guess: null,
+      kind: 'unknown',
+      confidence: 0.7,
+      source: 'head',
+      signals: {
+        head: { mime: headMime, size_bytes: size }
+      },
+      detector_version: DETECTOR_VERSION,
+      indexed_at: new Date().toISOString(),
+      size,
+      disagreement: false,
+      warnings,
+      sample: {
+        size,
+        head_bytes: 0,
+        tail_bytes: 0,
+        mid_bytes: 0,
+        total_bytes: 0,
+        supports_range: null,
+        range_ignored: null
+      }
+    };
   }
 
   let best = null;
@@ -644,22 +622,6 @@ export async function detectTypeForCid(cid, opts = {}) {
   if (!best) {
     best = buildFallback(sample.head, size);
     mergeSignals(signals, best.signals);
-  }
-
-  if (best && best.kind === 'video') {
-    try {
-      const videoMeta = detectVideoMetadata({
-        sample,
-        size,
-        mime: best.mime,
-        ext_guess: best.ext_guess
-      });
-      if (videoMeta) {
-        mergeSignals(signals, { media: videoMeta });
-      }
-    } catch (err) {
-      logError('detectTypeForCid video metadata error', err);
-    }
   }
 
   const durationMs = nowMs() - startMs;

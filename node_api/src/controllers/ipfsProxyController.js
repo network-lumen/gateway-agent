@@ -1,9 +1,15 @@
 import { CONFIG } from '../config.js';
 import { decryptPqRequest } from '../middleware/pqMiddleware.js';
+import { resolveIpnsToRootCid } from '../lib/ipnsResolver.js';
+import { recordCidAccess } from '../lib/usageDb.js';
 
 const GATEWAY_BASE = CONFIG.KUBO_GATEWAY_BASE;
 
-async function proxyToKubo(pathname, res, queryParams) {
+async function proxyToKubo(pathname, res, queryParams, usage) {
+  const usageCid = usage && typeof usage.cid === 'string' ? usage.cid : null;
+  const usageCidPromise = usage && usage.cidPromise ? usage.cidPromise : null;
+  const usageWallet = usage && typeof usage.wallet === 'string' ? usage.wallet : null;
+
   try {
     const url = new URL(pathname, GATEWAY_BASE);
     if (queryParams && typeof queryParams === 'object') {
@@ -20,6 +26,24 @@ async function proxyToKubo(pathname, res, queryParams) {
       // @ts-ignore
       compress: false
     });
+
+    try {
+      const status = upstream.status;
+      const ok = upstream.ok === true;
+      if (usageCid && usageWallet) {
+        void recordCidAccess({ cid: usageCid, wallet: usageWallet, ok, status }).catch(() => null);
+      } else if (usageCidPromise && usageWallet) {
+        void Promise.resolve(usageCidPromise)
+          .then((resolvedCid) => {
+            const c = String(resolvedCid || '').trim();
+            if (!c) return;
+            return recordCidAccess({ cid: c, wallet: usageWallet, ok, status });
+          })
+          .catch(() => null);
+      }
+    } catch {
+      // ignore usage errors
+    }
 
     res.status(upstream.status);
     upstream.headers.forEach((value, key) => {
@@ -40,6 +64,21 @@ async function proxyToKubo(pathname, res, queryParams) {
     }
   } catch (err) {
     console.error('[api:/ipfs-proxy] error', err);
+    try {
+      if (usageCid && usageWallet) {
+        void recordCidAccess({ cid: usageCid, wallet: usageWallet, ok: false, status: null }).catch(() => null);
+      } else if (usageCidPromise && usageWallet) {
+        void Promise.resolve(usageCidPromise)
+          .then((resolvedCid) => {
+            const c = String(resolvedCid || '').trim();
+            if (!c) return;
+            return recordCidAccess({ cid: c, wallet: usageWallet, ok: false, status: null });
+          })
+          .catch(() => null);
+      }
+    } catch {
+      // ignore
+    }
     if (!res.headersSent) {
       res.status(502).json({ error: 'ipfs_gateway_error' });
     } else {
@@ -125,7 +164,7 @@ export async function postPqIpfs(req, res) {
     pathname += cleanPath;
   }
 
-  return proxyToKubo(pathname, res, query);
+  return proxyToKubo(pathname, res, query, { cid, wallet: result.wallet });
 }
 
 export async function postPqIpns(req, res) {
@@ -156,5 +195,6 @@ export async function postPqIpns(req, res) {
     pathname += cleanPath;
   }
 
-  return proxyToKubo(pathname, res, query);
+  const cidPromise = resolveIpnsToRootCid(name, { ttlMs: 5 * 60 * 1000 });
+  return proxyToKubo(pathname, res, query, { cidPromise, wallet: result.wallet });
 }

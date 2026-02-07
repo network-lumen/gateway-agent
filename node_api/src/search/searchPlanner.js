@@ -1,12 +1,9 @@
 const ALLOWED_TARGETS = new Set([
   'site',
-  'video',
   'image',
-  'music',
   'doc',
   'code',
   'file',
-  'media',
   'mixed'
 ]);
 
@@ -17,15 +14,12 @@ function expandTargetToIndexerKinds(target) {
 
   switch (t) {
     case 'site':
-      // "Sites" are discovered primarily through HTML/doc/text pages, then aggregated to roots/domains.
-      return ['html', 'doc', 'text'];
-    case 'music':
-      return ['audio'];
-    case 'media':
-      return ['video', 'image', 'audio'];
+      // "Sites" are discovered primarily through HTML pages, then aggregated to roots/domains.
+      // Some gateways mislabel HTML as text/plain, so also scan `text` and post-filter to HTML/HTM.
+      return ['html', 'text'];
     case 'file':
       // Best-effort: non-media blobs and packages tend to end up here.
-      return ['archive', 'package', 'ipld', 'unknown'];
+      return ['archive', 'package', 'ipld'];
     case 'code':
       // Code is usually detected as text (or packaged as archive).
       return ['text', 'archive'];
@@ -70,7 +64,7 @@ export function buildSearchQuery({ intent, target, limit, offset }) {
       break;
 
     case 'content':
-      plan.baseKinds = ['video', 'image', 'audio'];
+      plan.baseKinds = ['doc', 'html', 'text', 'image'];
       break;
 
     case 'discover':

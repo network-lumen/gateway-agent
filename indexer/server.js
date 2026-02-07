@@ -8,9 +8,42 @@ import {
   getCountsSnapshot
 } from './metrics.js';
 import { dbGet, dbAll } from './db.js';
-import { getTypeCrawlerDebugSnapshot, sampleDebugForCid } from './typeCrawler.js';
 import { log, logError } from './log.js';
 import { recordHttpRequest, getHttpMetricsSnapshot } from './httpMetrics.js';
+import { CID } from 'multiformats/cid';
+
+function buildCidLookupCandidates(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return [];
+
+  const out = [];
+  const push = (v) => {
+    const s = String(v || '').trim();
+    if (!s) return;
+    if (!out.includes(s)) out.push(s);
+  };
+
+  push(raw);
+
+  try {
+    const cid = CID.parse(raw);
+    push(cid.toString());
+
+    if (cid.version === 0) {
+      push(cid.toV1().toString());
+    } else if (cid.version === 1) {
+      try {
+        push(cid.toV0().toString());
+      } catch {
+        // ignore (not convertible to CIDv0)
+      }
+    }
+  } catch {
+    // ignore parse errors (treat as raw string only)
+  }
+
+  return out;
+}
 
 export function startHttpServer() {
   const port = CONFIG.INDEXER_PORT;
@@ -204,11 +237,6 @@ export function startHttpServer() {
       return;
     }
 
-    if (method === 'GET' && url.pathname === '/cids') {
-      void handleGetCids(url, res);
-      return;
-    }
-
     if (method === 'GET' && url.pathname === '/search') {
       void handleSearch(url, res);
       return;
@@ -226,21 +254,6 @@ export function startHttpServer() {
 
     if (method === 'GET' && url.pathname === '/metrics/state') {
       void handleGetMetricsState(res);
-      return;
-    }
-
-    if (method === 'GET' && url.pathname === '/consistency') {
-      void handleGetConsistency(res);
-      return;
-    }
-
-    if (method === 'GET' && url.pathname === '/debug/typecrawler') {
-      void handleDebugTypeCrawler(res);
-      return;
-    }
-
-    if (method === 'GET' && url.pathname.startsWith('/debug/sample/')) {
-      void handleDebugSample(url, res);
       return;
     }
 
@@ -267,16 +280,26 @@ async function handleGetCid(url, res) {
       return;
     }
 
-    const row = await dbGet(
-      `SELECT cid, present, first_seen_at, last_seen_at, removed_at,
-              size_bytes, mime, ext_guess, kind, confidence, source,
-              present_source, signals_json, tags_json,
-              detector_version, indexed_at, error, updated_at,
-              is_directory, expanded_at, expand_error, expand_depth
-       FROM cids
-       WHERE cid = ?`,
-      [trimmed]
-    );
+    const candidates = buildCidLookupCandidates(trimmed);
+    let row = null;
+    for (const cand of candidates) {
+      // eslint-disable-next-line no-await-in-loop
+      const found = await dbGet(
+        `SELECT cid, present, first_seen_at, last_seen_at, removed_at,
+                size_bytes, mime, ext_guess, kind, confidence, source,
+                present_source, signals_json, tags_json,
+                detector_version, indexed_at, error, updated_at,
+                is_directory, expanded_at, expand_error, expand_depth,
+                site_entry_path, site_entry_cid, site_entry_indexed_at
+         FROM cids
+         WHERE cid = ?`,
+        [cand]
+      );
+      if (found) {
+        row = found;
+        break;
+      }
+    }
 
     if (!row) {
       res.statusCode = 404;
@@ -323,6 +346,9 @@ async function handleGetCid(url, res) {
       expanded_at: row.expanded_at,
       expand_error: row.expand_error,
       expand_depth: row.expand_depth,
+      site_entry_path: row.site_entry_path || null,
+      site_entry_cid: row.site_entry_cid || null,
+      site_entry_indexed_at: row.site_entry_indexed_at || null,
       signals,
       tags
     };
@@ -332,84 +358,6 @@ async function handleGetCid(url, res) {
     res.end(JSON.stringify(payload));
   } catch (err) {
     logError('/cid error', err);
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ error: 'internal_error' }));
-  }
-}
-
-async function handleGetCids(url, res) {
-  try {
-    const params = url.searchParams;
-
-    let limit = Number.parseInt(params.get('limit') || '', 10);
-    if (!Number.isFinite(limit) || limit <= 0) limit = 50;
-    if (limit > 200) limit = 200;
-
-    let offset = Number.parseInt(params.get('offset') || '', 10);
-    if (!Number.isFinite(offset) || offset < 0) offset = 0;
-
-    const presentParam = params.get('present');
-    const hasPresentFilter = presentParam === '0' || presentParam === '1';
-
-    const whereClauses = [];
-    const whereParams = [];
-    if (hasPresentFilter) {
-      whereClauses.push('present = ?');
-      whereParams.push(Number(presentParam));
-    }
-
-    const whereSql = whereClauses.length
-      ? `WHERE ${whereClauses.join(' AND ')}`
-      : '';
-
-    const countRow = await dbGet(
-      `SELECT COUNT(*) AS c FROM cids ${whereSql}`,
-      whereParams
-    );
-    const total = countRow && typeof countRow.c === 'number' ? countRow.c : 0;
-
-    const rows = await dbAll(
-      `SELECT cid, present, first_seen_at, last_seen_at, removed_at,
-              size_bytes, mime, ext_guess, kind, confidence, source,
-              present_source, detector_version, indexed_at, error, updated_at,
-              is_directory, expanded_at, expand_error, expand_depth, tags_json
-       FROM cids
-       ${whereSql}
-       ORDER BY (last_seen_at IS NULL) ASC, last_seen_at DESC, cid ASC
-       LIMIT ? OFFSET ?`,
-      [...whereParams, limit, offset]
-    );
-
-    const items = rows.map((row) => ({
-      cid: row.cid,
-      present: row.present === 1,
-      first_seen_at: row.first_seen_at,
-      last_seen_at: row.last_seen_at,
-      removed_at: row.removed_at,
-      size_bytes: row.size_bytes,
-      mime: row.mime,
-      ext_guess: row.ext_guess,
-      kind: row.kind,
-      confidence: row.confidence,
-      source: row.source,
-      present_source: row.present_source || null,
-      detector_version: row.detector_version,
-      indexed_at: row.indexed_at,
-      error: row.error,
-      updated_at: row.updated_at,
-      is_directory: row.is_directory === 1,
-      expanded_at: row.expanded_at,
-      expand_error: row.expand_error,
-      expand_depth: row.expand_depth,
-      tags_json: row.tags_json || null
-    }));
-
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ items, limit, offset, total }));
-  } catch (err) {
-    logError('/cids error', err);
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ error: 'internal_error' }));
@@ -444,38 +392,6 @@ async function handleGetMetricsState(res) {
   }
 }
 
-async function handleDebugTypeCrawler(res) {
-  try {
-    const snapshot = getTypeCrawlerDebugSnapshot();
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify(snapshot));
-  } catch (err) {
-    logError('/debug/typecrawler error', err);
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ error: 'internal_error' }));
-  }
-}
-
-async function handleGetConsistency(res) {
-  try {
-    const row = await dbGet(
-      'SELECT COUNT(*) AS n FROM cids WHERE present = 1 AND removed_at IS NOT NULL'
-    );
-    const n =
-      row && typeof row.n === 'number' && row.n >= 0 ? row.n : 0;
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ present_with_removed_at: n }));
-  } catch (err) {
-    logError('/consistency error', err);
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ error: 'internal_error' }));
-  }
-}
-
 async function handleSearch(url, res) {
   try {
     const params = url.searchParams;
@@ -495,14 +411,18 @@ async function handleSearch(url, res) {
     whereClauses.push('(c.mime IS NULL OR c.mime != ?)');
     whereParams.push('application/octet-stream');
 
-    const q = (params.get('q') || '').trim();
-    if (q) {
-      const like = `%${q}%`;
-      whereClauses.push(
-        '(c.cid LIKE ? OR c.mime LIKE ? OR c.ext_guess LIKE ? OR c.kind LIKE ? OR c.error LIKE ?)'
-      );
-      whereParams.push(like, like, like, like, like);
-    }
+    // Gateway policy: only surface kinds we actively support in search.
+    // This intentionally excludes media types we no longer index (and any null/unknown kinds).
+    whereClauses.push(
+      "c.kind IN ('image', 'doc', 'html', 'text', 'archive', 'ipld', 'package')"
+    );
+
+    const tokens = params
+      .getAll('token')
+      .map((t) => String(t || '').trim().toLowerCase())
+      .filter(Boolean)
+      .filter((t) => /^[a-z0-9]+$/.test(t))
+      .slice(0, 12);
 
     const kind = (params.get('kind') || '').trim();
     if (kind) {
@@ -547,57 +467,144 @@ async function handleSearch(url, res) {
       whereParams.push(`%"${tag}"%`);
     }
 
-    const whereSql = whereClauses.length
-      ? `WHERE ${whereClauses.join(' AND ')}`
-      : '';
+    const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-    const countRow = await dbGet(
-      `SELECT COUNT(*) AS c FROM cids c ${whereSql}`,
-      whereParams
-    );
-    const total = countRow && typeof countRow.c === 'number' ? countRow.c : 0;
+    let total = 0;
+    let rows = [];
 
-    const rows = await dbAll(
-      `SELECT c.cid,
-              c.present,
-              c.first_seen_at,
-              c.last_seen_at,
-              c.removed_at,
-              c.size_bytes,
-              c.mime,
-              c.ext_guess,
-              c.kind,
-              c.confidence,
-              c.source,
-              c.present_source,
-              c.signals_json,
-              c.tags_json,
-              c.detector_version,
-              c.indexed_at,
-              c.error,
-              c.updated_at,
-              c.is_directory,
-              c.expanded_at,
-              c.expand_error,
-              c.expand_depth,
-              p.root_cid,
-              p.path,
-              p.mime_hint AS path_mime_hint
-       FROM cids c
-       LEFT JOIN (
-         SELECT leaf_cid,
-                MIN(root_cid) AS root_cid,
-                MIN(path) AS path,
-                MIN(mime_hint) AS mime_hint
-         FROM cid_paths
-         GROUP BY leaf_cid
-       ) AS p
-         ON p.leaf_cid = c.cid
-       ${whereSql}
-       ORDER BY (c.last_seen_at IS NULL) ASC, c.last_seen_at DESC, c.cid ASC
-       LIMIT ? OFFSET ?`,
-      [...whereParams, limit, offset]
-    );
+    if (tokens.length) {
+      const tokenClauses = [];
+      const tokenParams = [];
+
+      // Prefix matching implemented as an index-friendly range query.
+      // This avoids `LIKE` (which can miss indexes depending on collation settings).
+      for (const t of tokens) {
+        const start = String(t || '').trim();
+        if (!start) continue;
+        tokenClauses.push('(token >= ? AND token < ?)');
+        tokenParams.push(start, `${start}\uFFFF`);
+      }
+
+      const tokenWhereSql = tokenClauses.length ? tokenClauses.join(' OR ') : '0';
+
+      const countRow = await dbGet(
+        `WITH matches AS (
+           SELECT cid,
+                  COUNT(*) AS matched_tokens,
+                  SUM(CASE WHEN count > 50 THEN 50 ELSE count END) AS score
+           FROM cid_tokens
+           WHERE ${tokenWhereSql}
+           GROUP BY cid
+         )
+         SELECT COUNT(*) AS c
+         FROM matches m
+         JOIN cids c ON c.cid = m.cid
+         ${whereSql}`,
+        [...tokenParams, ...whereParams]
+      );
+      total = countRow && typeof countRow.c === 'number' ? countRow.c : 0;
+
+      rows = await dbAll(
+        `WITH matches AS (
+           SELECT cid,
+                  COUNT(*) AS matched_tokens,
+                  SUM(CASE WHEN count > 50 THEN 50 ELSE count END) AS score
+           FROM cid_tokens
+           WHERE ${tokenWhereSql}
+           GROUP BY cid
+         )
+         SELECT c.cid,
+                c.present,
+                c.first_seen_at,
+                c.last_seen_at,
+                c.removed_at,
+                c.size_bytes,
+                c.mime,
+                c.ext_guess,
+                c.kind,
+                c.confidence,
+                c.source,
+                c.present_source,
+                c.signals_json,
+                c.tags_json,
+                c.detector_version,
+                c.indexed_at,
+                c.error,
+                c.updated_at,
+                c.is_directory,
+                c.expanded_at,
+                c.expand_error,
+                c.expand_depth,
+                p.root_cid,
+                p.path,
+                p.mime_hint AS path_mime_hint,
+                m.matched_tokens,
+                m.score AS token_score
+         FROM matches m
+         JOIN cids c ON c.cid = m.cid
+         LEFT JOIN (
+           SELECT leaf_cid,
+                  MIN(root_cid) AS root_cid,
+                  MIN(path) AS path,
+                  MIN(mime_hint) AS mime_hint
+           FROM cid_paths
+           GROUP BY leaf_cid
+         ) AS p
+           ON p.leaf_cid = c.cid
+         ${whereSql}
+         ORDER BY m.matched_tokens DESC, m.score DESC, (c.last_seen_at IS NULL) ASC, c.last_seen_at DESC, c.cid ASC
+         LIMIT ? OFFSET ?`,
+        [...tokenParams, ...whereParams, limit, offset]
+      );
+    } else {
+      const countRow = await dbGet(
+        `SELECT COUNT(*) AS c FROM cids c ${whereSql}`,
+        whereParams
+      );
+      total = countRow && typeof countRow.c === 'number' ? countRow.c : 0;
+
+      rows = await dbAll(
+        `SELECT c.cid,
+                c.present,
+                c.first_seen_at,
+                c.last_seen_at,
+                c.removed_at,
+                c.size_bytes,
+                c.mime,
+                c.ext_guess,
+                c.kind,
+                c.confidence,
+                c.source,
+                c.present_source,
+                c.signals_json,
+                c.tags_json,
+                c.detector_version,
+                c.indexed_at,
+                c.error,
+                c.updated_at,
+                c.is_directory,
+                c.expanded_at,
+                c.expand_error,
+                c.expand_depth,
+                p.root_cid,
+                p.path,
+                p.mime_hint AS path_mime_hint
+         FROM cids c
+         LEFT JOIN (
+           SELECT leaf_cid,
+                  MIN(root_cid) AS root_cid,
+                  MIN(path) AS path,
+                  MIN(mime_hint) AS mime_hint
+           FROM cid_paths
+           GROUP BY leaf_cid
+         ) AS p
+           ON p.leaf_cid = c.cid
+         ${whereSql}
+         ORDER BY (c.last_seen_at IS NULL) ASC, c.last_seen_at DESC, c.cid ASC
+         LIMIT ? OFFSET ?`,
+        [...whereParams, limit, offset]
+      );
+    }
 
     const items = rows.map((row) => ({
       cid: row.cid,
@@ -638,27 +645,7 @@ async function handleSearch(url, res) {
   }
 }
 
-async function handleDebugSample(url, res) {
-  try {
-    const cid = url.pathname.slice('/debug/sample/'.length).trim();
-    if (!cid) {
-      res.statusCode = 400;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ error: 'cid_required' }));
-      return;
-    }
-
-    const payload = await sampleDebugForCid(cid);
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify(payload));
-  } catch (err) {
-    logError('/debug/sample error', err);
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ error: 'internal_error' }));
-  }
-}
+// intentionally no debug endpoints in prod builds
 
 async function handleGetChildren(url, res) {
   try {

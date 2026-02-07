@@ -274,3 +274,37 @@ export async function fetchWalletPlanFromChain(wallet) {
     quota_bytes_total: info.quotaBytesTotal
   };
 }
+
+function parseCoinAmountBigInt(amountRaw) {
+  const s = String(amountRaw ?? '').trim();
+  if (!s) return 0n;
+  try {
+    return BigInt(s);
+  } catch {
+    return 0n;
+  }
+}
+
+export async function fetchWalletBalanceByDenom(wallet, denom = 'ulmn', { timeoutMs } = {}) {
+  const addr = String(wallet || '').trim();
+  const d = String(denom || '').trim() || 'ulmn';
+  if (!addr) return { ok: false, error: 'unreachable' };
+
+  const res = await fetchJson(
+    `/cosmos/bank/v1beta1/balances/${encodeURIComponent(addr)}/by_denom?denom=${encodeURIComponent(d)}`,
+    { timeoutMs }
+  );
+
+  if (!res.ok) {
+    logChainError(res.error || 'unreachable', {
+      wallet: addr,
+      denom: d,
+      status: res.status,
+      body: res.body
+    });
+    return { ok: false, error: res.error || 'unreachable' };
+  }
+
+  const amount = parseCoinAmountBigInt(res.json?.balance?.amount ?? '0');
+  return { ok: true, denom: d, amount };
+}

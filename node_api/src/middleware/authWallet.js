@@ -3,26 +3,7 @@ import { decryptPqRequest } from './pqMiddleware.js';
 export async function authWallet(req, res, next) {
   try {
     const pqHeader = String(req.header('X-Lumen-PQ') || '').trim().toLowerCase();
-
-    const path = String(req.path || '');
-    const isUsageRoute = path === '/wallet/usage' ||
-      (path.startsWith('/wallet/') && path.endsWith('/usage'));
-    const isCidsRoute = path === '/wallet/cids';
-    const isPinRoute = path === '/pin';
-    const isUnpinRoute = path === '/unpin';
-    const isIspinnedRoute = path === '/ispinned';
-    const isIngestReadyRoute = path === '/ingest/ready';
-    const isIngestInitRoute = path === '/ingest/init';
-
-    const isPqMandatoryRoute =
-      isUsageRoute ||
-      isCidsRoute ||
-      isPinRoute ||
-      isUnpinRoute ||
-      isIspinnedRoute ||
-      isIngestReadyRoute ||
-      isIngestInitRoute;
-
+    
     // All authWallet routes are PQ-only.
     if (pqHeader !== 'v1') {
       return res

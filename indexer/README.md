@@ -2,7 +2,7 @@
 
 This folder contains a standalone indexer process that keeps a local SQLite cache of IPFS pins, type metadata, and deterministic tags. It is designed to be:
 
-- Deterministic (no hidden state, no click/popularity signals).
+- Deterministic
 - Bounded in I/O (HTTP range sampling with hard caps).
 - Easy to run in Docker and on Windows (uses the `sqlite3` driver with prebuilt binaries).
 
@@ -20,7 +20,6 @@ It runs as an independent service and is consumed by the `node_api` for search a
 - Content analysis:
   - HTML/text/doc: bag-of-words + zero-shot text labels.
   - Images: filename analysis + CLIP zero-shot tags.
-  - Video: container/extension analysis + MP4 duration parsing.
 - Deterministic, low-cardinality tags stored as JSON.
 - Periodic type crawling with configurable concurrency.
 - Directory expansion (`dirExpander`) that walks pinned UnixFS directories and inserts child CIDs into `cids`.
@@ -28,10 +27,9 @@ It runs as an independent service and is consumed by the `node_api` for search a
   - `GET /health`
   - `GET /metrics` (Prometheus format)
   - `GET /metrics/state`
-  - `GET /cids`, `GET /cid/:cid`
+  - `GET /cid/:cid`
   - `GET /search`
   - `GET /children/:cid`, `GET /parents/:cid`
-  - misc debug endpoints (`/consistency`, `/debug/typecrawler`, `/debug/sample/:cid`).
 
 ## Environment
 
@@ -45,22 +43,26 @@ All environment variables are optional; defaults are shown. `KUBO_API_BASE` **mu
 - `TYPE_CRAWL_REFRESH_SECONDS` (default `300`)
 - `SAMPLE_BYTES` (default `262144`) – bytes sampled at head/tail for content detection.
 - `MAX_TOTAL_BYTES` (default `786432`) – hard cap on total sampled bytes per CID.
+- `DOC_EXTRACT_MAX_BYTES` (default `33554432`) – max bytes downloaded to extract text from document containers (PDF/DOCX/EPUB).
+- `DOC_EXTRACT_MAX_CHARS` (default `20000`) – max extracted characters considered for tokenization.
+- `DOC_EXTRACT_TIMEOUT_MS` (default `60000`) – timeout for full document download/parsing attempts.
+- `DOC_EXTRACT_RETRIES` (default `1`) – retries for full document download attempts.
+- `DOC_EXTRACT_RETRY_TTL_SECONDS` (default `21600`) – minimum time between re-attempts when a document is still in fallback mode (`doc:sample`, `doc:too_large`, `doc:full_fetch_failed`); retry throttling is based on `indexed_at` (pin sync updates `updated_at` frequently).
+- `PDF_EXTRACT_MAX_PAGES` (default `10`) – maximum PDF pages extracted (best-effort).
+- `EPUB_EXTRACT_MAX_FILES` (default `25`) – maximum EPUB content files scanned (best-effort).
 - `CRAWL_CONCURRENCY` (default `3`) – concurrent typeCrawler workers.
-- `VIDEO_METADATA_MAX_DURATION_SECONDS` (default `10800`, i.e. 3h) – videos longer than this are not enriched with duration metadata.
-- `VIDEO_METADATA_MAX_SIZE_BYTES` (default `10 * 1024 * 1024 * 1024`) – maximum video size considered for duration parsing (aligned with nginx CAR upload limit).
-- `MAGIKA_URL` (optional, reserved for future use).
+- `MAGIKA_URL` (optional) – HTTP endpoint for Magika classification (expects `{ size, head_base64, tail_base64 }` and returns `{ mime, ext?, kind?, confidence? }`).
 - `REQUEST_TIMEOUT_MS` (default `15000`).
 - `DIR_EXPAND_REFRESH_SECONDS` (default `600`) – how often directory expansion runs.
 - `DIR_EXPAND_TTL_SECONDS` (default `1800`) – minimum age before a directory is re-expanded.
 - `DIR_EXPAND_MAX_CHILDREN` (default `1000`) – max children per directory expansion.
 - `DIR_EXPAND_MAX_DEPTH` (default `10`) – max recursive depth for expansion.
-- `DIR_EXPAND_CONCURRENCY` (default `2`) – number of concurrent expansion workers.
+- `DIR_EXPAND_CONCURRENCY` (default `1`) – number of concurrent expansion workers.
 - `DIR_EXPAND_PRUNE_CHILDREN` (default `1`) – whether to prune children no longer present in a directory.
 - `DIR_EXPAND_TRACK_PARENT` (default `1`) – maintain `cid_edges` parent/child relations.
 - `DIR_EXPAND_MAX_BATCH` (default `50`) – max number of directories processed per expansion cycle.
 - `PATH_INDEX_MAX_FILES_PER_ROOT` (default `1000`) – per-root limit for `cid_paths` (path index).
 - `PATH_INDEX_MAX_DEPTH` (default `10`) – max path depth stored in `cid_paths`.
-- `TYPECRAWLER_DEBUG` (default `false`) – enable in-memory debug snapshots for typeCrawler.
 
 To reset the indexer state **(for development only)**, you can safely delete the on-disk SQLite file used by the Docker volume:
 
@@ -77,7 +79,7 @@ npm --prefix indexer install
 npm --prefix indexer run indexer
 ```
 
-To run the sanity check (health + metrics + small `/cids` probe and consistency check):
+To run the sanity check (health + metrics + metrics/state + token search + kubo version):
 
 ```bash
 npm --prefix indexer run sanity
@@ -87,6 +89,12 @@ You can override the base URL used by the sanity script with:
 
 ```bash
 INDEXER_BASE_URL=http://indexer:8790 npm --prefix indexer run sanity
+```
+
+You can optionally test a `/cid/:cid` response by providing a known CID:
+
+```bash
+SANITY_SAMPLE_CID=<some-cid> npm --prefix indexer run sanity
 ```
 
 ## HTTP endpoints
@@ -120,10 +128,9 @@ INDEXER_BASE_URL=http://indexer:8790 npm --prefix indexer run sanity
   - `present`, `present_source`
   - `mime`, `ext_guess`, `kind`, `confidence`, `source`
   - directory flags: `is_directory`, `expanded_at`, `expand_error`, `expand_depth`
-- `GET "http://localhost:8790/cids?present=1&limit=50&offset=0"` → paginated view of `cids` (sorted by `last_seen_at` DESC), items include the same core fields as `/cid/:cid`.
-- `GET "http://localhost:8790/search?q=...&kind=...&present=1&tag=...&limit=50"` → simple search over:
-  - `cid`, `mime`, `ext_guess`, `kind`, `error`
-  - with optional filters: `kind`, `mime`, `present=1|0`, `source`, `is_directory=1|0`, `tag` (repeated), `present_source`.
+- `GET "http://localhost:8790/search?token=...&kind=...&present=1&tag=...&limit=50"` → token search over `cid_tokens`, with optional filters:
+  - `token` (repeated), `tag` (repeated)
+  - `kind`, `mime`, `present=1|0`, `source`, `is_directory=1|0`, `present_source`
 - `GET http://localhost:8790/children/:cid` → list of edges where `cid` is parent:
   - `{ parent: "<cid>", children: [{ cid, first_seen_at, last_seen_at }, ...] }`
 - `GET http://localhost:8790/parents/:cid` → list of edges where `cid` is child:
@@ -134,10 +141,9 @@ Example manual checks with `curl` (from the host):
 ```bash
 curl -s http://localhost:8790/health
 curl -s http://localhost:8790/metrics | head
-curl -s "http://localhost:8790/cids?present=1&limit=5"
 curl -s http://localhost:8790/metrics/state
 curl -s http://localhost:8790/cid/<some-cid>
-curl -s "http://localhost:8790/search?q=.mp4&present=1&limit=10"
+curl -s "http://localhost:8790/search?token=pdf&present=1&limit=10"
 curl -s http://localhost:8790/children/<some-directory-cid>
 curl -s http://localhost:8790/parents/<some-child-cid>
 ```
@@ -170,9 +176,8 @@ This keeps sampling bounded while still allowing type detection to proceed even 
 For each non-directory CID, the indexer runs a content analysis pipeline and stores the result in `tags_json` (JSON) alongside low-level detection signals:
 
 - **Type detection (`detectType.js`)**
-  - Uses `file-type` magic bytes, container sniffing (PDF, ZIP/Office, CAR, MP4, HTML, etc.), optional Magika, and a fallback heuristic.
-  - Normalizes to a small `kind` set: `image`, `video`, `audio`, `html`, `text`, `doc`, `archive`, `ipld`, `unknown`.
-  - For MP4/MOV videos under `VIDEO_METADATA_MAX_SIZE_BYTES`, parses the `mvhd` box to derive `signals.media.duration_seconds` / `duration_ms`, clamped by `VIDEO_METADATA_MAX_DURATION_SECONDS`.
+  - Uses `file-type` magic bytes, container sniffing (PDF, ZIP/Office, CAR, HTML, etc.), optional Magika, and a fallback heuristic.
+  - Normalizes to a small `kind` set: `image`, `html`, `text`, `doc`, `archive`, `ipld`, `package`, `unknown`.
 
 - **Content classification (`contentSniffer.js`)**
   - HTML/text/doc:
@@ -180,20 +185,33 @@ For each non-directory CID, the indexer runs a content analysis pipeline and sto
     - Extracts tokens (bag-of-words) with EN/FR stopwords.
     - Derives `topics` from the most important tokens.
     - Enriches with a text micro-model (`textTagger.js`, Xenova distilbert zero-shot) which outputs high-level labels (documentation, blog post, news article, legal terms, etc.), merged back into `tokens`/`topics`.
+    - For document containers (PDF/DOCX/EPUB), performs a bounded full-text extraction to avoid missing keywords that are not present in the sampled bytes:
+      - PDF prefers a range-based extractor (pdf.js over HTTP Range) and falls back to a full download when needed.
+      - DOCX/EPUB use a bounded full download (up to `DOC_EXTRACT_MAX_BYTES`).
+      - Limits are capped by `DOC_EXTRACT_TIMEOUT_MS`, `DOC_EXTRACT_MAX_BYTES`, `DOC_EXTRACT_MAX_CHARS`, and `PDF_EXTRACT_MAX_PAGES` / `EPUB_EXTRACT_MAX_FILES`.
   - Images:
     - Uses filename tokens.
     - Enriches with a CLIP zero-shot image classifier (`imageTagger.js`, `@xenova/transformers`) on a fixed vocabulary (UI/code/docs/diagrams/marketing, etc.).
     - Merges image tags into `tags_json.tokens`/`topics`.
-  - Video:
-    - Lightweight analysis based on filename, container type (MP4/HLS), and extension, plus the duration metadata when available.
 
 - **Tag synthesis (`tags.js`)**
   - Produces deterministic tags such as:
     - `kind:<kind>`, `category:<media|document|package|unknown>`
     - `mime:<mime>`, `ext:<ext>`, `detected_by:<source>`, `confidence:<low|medium|high>`
     - `size_bucket:<xs|s|m|l|xl|xxl>`
-    - `video_duration:<short|medium|long>` for videos with parsed duration
-    - `container:zip|mp4|pdf|car`, `office:*`, `ebook:epub`
-    - `streamable:maybe`, `needs:metadata`, `needs:ai_tags`
+    - `container:zip|pdf|car`, `office:*`, `ebook:epub`
+    - `needs:metadata` (documents and images), `needs:ai_tags` (images only)
 
 The combined `tags_json` structure is intended to be stable and low‑cardinality so it can be safely consumed by external search/ranking logic without additional migrations.
+
+## Token Search (Scalable)
+
+To support scalable keyword search (beyond a small “recent window”), the indexer maintains an inverted index table:
+
+- `cid_tokens(token, cid, count)` populated by the `typeCrawler` from `tags_json.tokens` (capped by `SEARCH_TOKEN_INDEX_MAX_TOKENS`).
+
+The `/search` endpoint accepts repeated `token` query params:
+
+- `GET /search?token=hack&token=security&present=1&kind=doc`
+
+When `token` is provided, results are ranked by token match count/score and then by recency. When `token` is not provided, `/search` behaves like a “recent content” feed (no substring/LIKE filtering).

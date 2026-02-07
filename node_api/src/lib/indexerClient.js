@@ -80,12 +80,18 @@ export async function fetchChildren(cid, { timeoutMs } = {}) {
 }
 
 export async function searchCidsSimple(
-  { q, kind, present = 1, limit, offset } = {},
+  { kind, tokens, present = 1, limit, offset } = {},
   { timeoutMs } = {}
 ) {
   const params = new URLSearchParams();
-  if (q) params.set('q', String(q));
   if (kind) params.set('kind', String(kind));
+  if (Array.isArray(tokens)) {
+    for (const t of tokens) {
+      const tok = String(t || '').trim().toLowerCase();
+      if (!tok) continue;
+      params.append('token', tok);
+    }
+  }
   if (present !== undefined && present !== null) {
     params.set('present', present ? '1' : '0');
   }

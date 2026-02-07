@@ -1,6 +1,6 @@
 {
   "name": "gateway-node-api",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "main": "src/server.js",
@@ -13,6 +13,7 @@
     "express": "^4.19.2",
     "@cosmjs/crypto": "^0.36.0",
     "@cosmjs/encoding": "^0.36.0",
+    "multiformats": "^13.4.1",
     "sqlite3": "^5.1.7",
     "@noble/post-quantum": "^0.5.0"
   }

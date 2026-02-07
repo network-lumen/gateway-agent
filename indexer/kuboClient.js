@@ -44,13 +44,15 @@ export async function kuboLs(cid) {
       const childCid =
         link.Hash || link.Cid || link.CID || (link.Target && link.Target['/']);
       if (!childCid) continue;
+      const type = link.Type === 1 ? 'dir' : link.Type === 2 ? 'file' : 'unknown';
       links.push({
         cid: String(childCid),
         name: link.Name || null,
         size:
           typeof link.Size === 'number' && link.Size >= 0
             ? link.Size
-            : null
+            : null,
+        type
       });
     }
   }

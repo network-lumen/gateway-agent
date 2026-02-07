@@ -8,7 +8,6 @@ function normalizePath(path) {
   if (base.startsWith('/cid/')) return '/cid/:cid';
   if (base.startsWith('/children/')) return '/children/:cid';
   if (base.startsWith('/parents/')) return '/parents/:cid';
-  if (base.startsWith('/debug/sample/')) return '/debug/sample/:cid';
 
   return base;
 }

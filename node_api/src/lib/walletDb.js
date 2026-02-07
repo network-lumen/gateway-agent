@@ -1,6 +1,8 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import sqlite3 from 'sqlite3';
+import { CID } from 'multiformats/cid';
+import {
+  parseSqliteBusyTimeoutMs,
+  createSqliteStore
+} from './sqliteUtils.js';
 
 const DEFAULT_DB_PATH = '/data/node_api/wallets.sqlite';
 
@@ -9,57 +11,20 @@ const DB_PATH =
     ? process.env.NODE_API_WALLET_DB_PATH.trim()
     : DEFAULT_DB_PATH;
 
-let dbInstance = null;
-let initPromise = null;
-let schemaEnsured = false;
-
-function openDb() {
-  return new Promise((resolve, reject) => {
-    const db = new sqlite3.Database(DB_PATH, (err) => {
-      if (err) reject(err);
-      else resolve(db);
-    });
-  });
-}
-
-function run(db, sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function onRun(err) {
-      if (err) reject(err);
-      else resolve(this);
-    });
-  });
-}
-
-function all(db, sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows || []);
-    });
-  });
-}
-
-function get(db, sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) reject(err);
-      else resolve(row || null);
-    });
-  });
-}
-
-function exec(db, sql) {
-  return new Promise((resolve, reject) => {
-    db.exec(sql, (err) => {
-      if (err) reject(err);
-      else resolve();
-    });
-  });
-}
-
-const SCHEMA_SQL = `
+const SQLITE_BUSY_TIMEOUT_MS = parseSqliteBusyTimeoutMs(
+  'NODE_API_SQLITE_BUSY_TIMEOUT_MS',
+  5000
+);
+const WALLET_DB = createSqliteStore({
+  dbPath: DB_PATH,
+  busyTimeoutMs: SQLITE_BUSY_TIMEOUT_MS,
+  logLabel: 'walletDb',
+  enableTransactions: true,
+  schemaSql: ({ busyTimeoutMs }) => `
 PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA foreign_keys = ON;
+PRAGMA busy_timeout = ${busyTimeoutMs};
 
 CREATE TABLE IF NOT EXISTS wallets (
   wallet TEXT PRIMARY KEY,
@@ -81,6 +46,8 @@ CREATE INDEX IF NOT EXISTS idx_wallet_roots_wallet
   ON wallet_roots(wallet);
 CREATE INDEX IF NOT EXISTS idx_wallet_roots_status
   ON wallet_roots(status);
+CREATE INDEX IF NOT EXISTS idx_wallet_roots_root_cid_status
+  ON wallet_roots(root_cid, status);
 
 CREATE TABLE IF NOT EXISTS wallet_pins (
   wallet TEXT NOT NULL,
@@ -93,65 +60,44 @@ CREATE INDEX IF NOT EXISTS idx_wallet_pins_wallet
   ON wallet_pins(wallet);
 CREATE INDEX IF NOT EXISTS idx_wallet_pins_cid
   ON wallet_pins(cid);
-`;
+`
+});
 
-async function ensureSchema(db) {
-  if (schemaEnsured) return;
-  await exec(db, SCHEMA_SQL);
-  schemaEnsured = true;
-}
+function expandCidVariants(cid) {
+  const raw = String(cid || '').trim();
+  if (!raw) return [];
 
-async function initDb() {
-  if (dbInstance) return dbInstance;
-  if (initPromise) return initPromise;
-
-  const dir = path.dirname(DB_PATH);
+  const variants = new Set([raw]);
   try {
-    fs.mkdirSync(dir, { recursive: true });
-  } catch (err) {
-    // If directory creation fails, surface the error when opening DB.
-    // eslint-disable-next-line no-console
-    console.error('[walletDb] failed to create db dir', { dir, error: String(err?.message || err) });
-  }
-
-  initPromise = (async () => {
-    const db = await openDb();
-    await ensureSchema(db);
-    dbInstance = db;
-    return dbInstance;
-  })();
-
-  return initPromise;
-}
-
-async function getDb() {
-  if (dbInstance) return dbInstance;
-  return initDb();
-}
-
-async function runInTransaction(work) {
-  const db = await getDb();
-  await run(db, 'BEGIN IMMEDIATE TRANSACTION');
-  try {
-    await work(db);
-    await run(db, 'COMMIT');
-  } catch (err) {
+    const parsed = CID.parse(raw);
+    variants.add(parsed.toString());
     try {
-      await run(db, 'ROLLBACK');
+      variants.add(parsed.toV1().toString());
     } catch {
-      // ignore rollback errors
+      // ignore
     }
-    throw err;
+    try {
+      variants.add(parsed.toV0().toString());
+    } catch {
+      // ignore
+    }
+  } catch {
+    // ignore invalid CIDs
   }
+
+  return Array.from(variants).filter(Boolean);
 }
+
+const dbRun = WALLET_DB.dbRun;
+const dbGet = WALLET_DB.dbGet;
+const dbAll = WALLET_DB.dbAll;
+const runInTransaction = WALLET_DB.runInTransaction;
 
 export async function upsertWalletRecord({ wallet, planId }) {
-  const db = await getDb();
   const normalizedPlanId =
     typeof planId === 'string' && planId.trim() ? planId.trim() : null;
 
-  await run(
-    db,
+  await dbRun(
     `
     INSERT INTO wallets (wallet, plan_id, plan_expires_at, last_chain_check_at)
     VALUES (?, ?, NULL, NULL)
@@ -163,13 +109,11 @@ export async function upsertWalletRecord({ wallet, planId }) {
 }
 
 export async function touchWalletChainCheck(wallet, timestampMs) {
-  const db = await getDb();
   const ts =
     typeof timestampMs === 'number' && Number.isFinite(timestampMs)
       ? timestampMs
       : Date.now();
-  await run(
-    db,
+  await dbRun(
     `
     UPDATE wallets
     SET last_chain_check_at = ?
@@ -185,7 +129,6 @@ export async function updateWalletPlanFromChain({
   planExpiresAt,
   chainCheckAt
 }) {
-  const db = await getDb();
   const normalizedPlanId =
     typeof planId === 'string' && planId.trim() ? planId.trim() : null;
   const expires =
@@ -197,8 +140,7 @@ export async function updateWalletPlanFromChain({
       ? chainCheckAt
       : Date.now();
 
-  await run(
-    db,
+  await dbRun(
     `
     UPDATE wallets
     SET
@@ -250,9 +192,7 @@ export async function addOrUpdateWalletRoots({
 }
 
 export async function getWalletRow(wallet) {
-  const db = await getDb();
-  return get(
-    db,
+  return dbGet(
     `
     SELECT wallet, plan_id, plan_expires_at, last_chain_check_at
     FROM wallets
@@ -262,24 +202,23 @@ export async function getWalletRow(wallet) {
   );
 }
 
-export async function getWalletRoots(wallet) {
-  const db = await getDb();
-  return all(
-    db,
+export async function getWalletRootCids(wallet) {
+  const w = String(wallet || '').trim();
+  if (!w) return [];
+  const rows = await dbAll(
     `
-    SELECT wallet, root_cid, created_at, bytes_estimated, status
+    SELECT root_cid
     FROM wallet_roots
-    WHERE wallet = ?
+    WHERE wallet = ? AND status = 'active'
     ORDER BY created_at DESC, root_cid ASC
   `,
-    [wallet]
+    [w]
   );
+  return rows.map((r) => String(r.root_cid || '').trim()).filter(Boolean);
 }
 
 export async function getWalletRootsSummary(wallet) {
-  const db = await getDb();
-  const rows = await all(
-    db,
+  const rows = await dbAll(
     `
     SELECT
       COUNT(*) AS total_roots,
@@ -306,18 +245,30 @@ export async function getWalletRootsSummary(wallet) {
 export async function getWalletsForRootCid(rootCid) {
   const cid = String(rootCid || '').trim();
   if (!cid) return [];
-  const db = await getDb();
-  const rows = await all(
-    db,
+
+  const variants = expandCidVariants(cid);
+  const placeholders = variants.map(() => '?').join(', ');
+  const params = [...variants, ...variants];
+
+  const rows = await dbAll(
     `
-    SELECT wallet
-    FROM wallet_roots
-    WHERE root_cid = ?
-      AND status = 'active'
+    SELECT wallet FROM (
+      SELECT wallet
+      FROM wallet_roots
+      WHERE status = 'active'
+        AND root_cid IN (${placeholders})
+
+      UNION
+
+      SELECT wallet
+      FROM wallet_pins
+      WHERE cid IN (${placeholders})
+    )
     ORDER BY wallet ASC
   `,
-    [cid]
+    params
   );
+
   return rows.map((r) => String(r.wallet || '').trim()).filter(Boolean);
 }
 
@@ -325,9 +276,7 @@ export async function hasWalletRoot(wallet, rootCid) {
   const w = String(wallet || '').trim();
   const c = String(rootCid || '').trim();
   if (!w || !c) return false;
-  const db = await getDb();
-  const row = await get(
-    db,
+  const row = await dbGet(
     `
     SELECT 1 AS ok
     FROM wallet_roots
@@ -343,13 +292,11 @@ export async function getWalletPinnedCidsPage(wallet, { limit, offset } = {}) {
   const w = String(wallet || '').trim();
   if (!w) return [];
 
-  const db = await getDb();
   const safeLimit =
     Number.isFinite(limit) && limit > 0 ? Math.min(Number(limit), 1000) : 201;
   const safeOffset = Number.isFinite(offset) && offset >= 0 ? Number(offset) : 0;
 
-  return all(
-    db,
+  return dbAll(
     `
     SELECT cid, created_at FROM (
       SELECT root_cid AS cid, created_at
@@ -371,9 +318,7 @@ export async function removeWalletRoot(wallet, rootCid) {
   const w = String(wallet || '').trim();
   const c = String(rootCid || '').trim();
   if (!w || !c) return;
-  const db = await getDb();
-  await run(
-    db,
+  await dbRun(
     `
     DELETE FROM wallet_roots
     WHERE wallet = ? AND root_cid = ?
@@ -386,10 +331,8 @@ export async function addWalletPin(wallet, cid) {
   const w = String(wallet || '').trim();
   const c = String(cid || '').trim();
   if (!w || !c) return;
-  const db = await getDb();
   const now = Date.now();
-  await run(
-    db,
+  await dbRun(
     `
     INSERT INTO wallet_pins (wallet, cid, created_at)
     VALUES (?, ?, ?)
@@ -404,9 +347,7 @@ export async function removeWalletPin(wallet, cid) {
   const w = String(wallet || '').trim();
   const c = String(cid || '').trim();
   if (!w || !c) return;
-  const db = await getDb();
-  await run(
-    db,
+  await dbRun(
     `
     DELETE FROM wallet_pins
     WHERE wallet = ? AND cid = ?
@@ -419,9 +360,7 @@ export async function hasWalletPin(wallet, cid) {
   const w = String(wallet || '').trim();
   const c = String(cid || '').trim();
   if (!w || !c) return false;
-  const db = await getDb();
-  const row = await get(
-    db,
+  const row = await dbGet(
     `
     SELECT 1 AS ok
     FROM wallet_pins
@@ -436,9 +375,7 @@ export async function hasWalletPin(wallet, cid) {
 export async function countWalletPinsForCid(cid) {
   const c = String(cid || '').trim();
   if (!c) return 0;
-  const db = await getDb();
-  const row = await get(
-    db,
+  const row = await dbGet(
     `
     SELECT COUNT(*) AS n
     FROM wallet_pins
@@ -451,4 +388,69 @@ export async function countWalletPinsForCid(cid) {
       ? row.n
       : 0;
   return n;
+}
+
+export async function countWalletReplicationForCids(cidsInput, { sinceMs } = {}) {
+  const raw = Array.isArray(cidsInput) ? cidsInput : [];
+  const cids = Array.from(new Set(raw.map((c) => String(c || '').trim()).filter(Boolean)));
+  const counts = new Map();
+  if (!cids.length) return counts;
+
+  const threshold =
+    typeof sinceMs === 'number' && Number.isFinite(sinceMs) ? sinceMs : null;
+
+  const placeholders = cids.map(() => '?').join(', ');
+
+  let sql = '';
+  let params = [];
+
+  if (threshold !== null) {
+    sql = `
+      SELECT cid, COUNT(DISTINCT wallet) AS n
+      FROM (
+        SELECT root_cid AS cid, wallet
+        FROM wallet_roots
+        WHERE status = 'active'
+          AND root_cid IN (${placeholders})
+          AND created_at >= ?
+
+        UNION ALL
+
+        SELECT cid AS cid, wallet
+        FROM wallet_pins
+        WHERE cid IN (${placeholders})
+          AND created_at >= ?
+      ) AS t
+      GROUP BY cid
+    `;
+    params = [...cids, threshold, ...cids, threshold];
+  } else {
+    sql = `
+      SELECT cid, COUNT(DISTINCT wallet) AS n
+      FROM (
+        SELECT root_cid AS cid, wallet
+        FROM wallet_roots
+        WHERE status = 'active'
+          AND root_cid IN (${placeholders})
+
+        UNION ALL
+
+        SELECT cid AS cid, wallet
+        FROM wallet_pins
+        WHERE cid IN (${placeholders})
+      ) AS t
+      GROUP BY cid
+    `;
+    params = [...cids, ...cids];
+  }
+
+  const rows = await dbAll(sql, params);
+  for (const row of rows) {
+    const cid = String(row?.cid || '').trim();
+    if (!cid) continue;
+    const n = typeof row.n === 'number' && Number.isFinite(row.n) && row.n >= 0 ? row.n : 0;
+    counts.set(cid, n);
+  }
+
+  return counts;
 }

@@ -29,19 +29,7 @@ const PATH_EXT_ALLOWLIST = new Set([
   'srt',
   'vtt',
   'pdf',
-  'mp4',
-  'm4v',
-  'webm',
-  'mkv',
-  'mov',
-  'm3u8',
-  'm3u',
-  'mp3',
-  'flac',
-  'wav',
-  'ogg',
-  'oga',
-  'opus',
+  'epub',
   'jpg',
   'jpeg',
   'png',
@@ -220,6 +208,30 @@ function getExtFromName(name) {
   return name.slice(idx + 1).toLowerCase();
 }
 
+function isHtmlLikeName(name) {
+  const ext = getExtFromName(String(name || '').trim().toLowerCase());
+  return ext === 'html' || ext === 'htm' || ext === 'xhtml';
+}
+
+function scoreHtmlEntrypointPath(pathValue) {
+  const p = String(pathValue || '').trim();
+  if (!p) return -Infinity;
+  const lower = p.toLowerCase();
+  if (!isHtmlLikeName(lower)) return -Infinity;
+
+  let score = 0;
+  if (lower === 'index.html' || lower === 'index.htm' || lower === 'index.xhtml') score += 2000;
+  if (lower.endsWith('/index.html') || lower.endsWith('/index.htm') || lower.endsWith('/index.xhtml')) {
+    score += 1500;
+  }
+  if (lower === 'home.html' || lower.endsWith('/home.html')) score += 1200;
+  if (lower === 'default.html' || lower.endsWith('/default.html')) score += 1100;
+  score += 500;
+  score -= lower.split('/').length;
+  score -= Math.min(lower.length, 256) / 128;
+  return score;
+}
+
 function shouldIndexPathName(name) {
   const ext = getExtFromName(name.trim().toLowerCase());
   if (!ext) return false;
@@ -233,19 +245,7 @@ function guessMimeHintFromName(name) {
   if (ext === 'txt' || ext === 'md' || ext === 'markdown') return 'text/plain';
   if (ext === 'srt' || ext === 'vtt') return 'text/plain';
   if (ext === 'pdf') return 'application/pdf';
-  if (ext === 'mp4' || ext === 'm4v' || ext === 'webm' || ext === 'mkv' || ext === 'mov') {
-    return 'video/*';
-  }
-  if (
-    ext === 'mp3' ||
-    ext === 'flac' ||
-    ext === 'wav' ||
-    ext === 'ogg' ||
-    ext === 'oga' ||
-    ext === 'opus'
-  ) {
-    return 'audio/*';
-  }
+  if (ext === 'epub') return 'application/epub+zip';
   if (
     ext === 'jpg' ||
     ext === 'jpeg' ||
@@ -258,6 +258,100 @@ function guessMimeHintFromName(name) {
     return 'image/*';
   }
   return null;
+}
+
+async function pickBestHtmlEntrypointFromCidPaths(rootCid) {
+  const maxDepth = CONFIG.SITE_ENTRYPOINT_MAX_DEPTH || 2;
+  const maxCandidates = CONFIG.SITE_ENTRYPOINT_MAX_CANDIDATES || 500;
+
+  let rows = [];
+  try {
+    rows = await dbAll(
+      `
+      SELECT path, leaf_cid, depth
+      FROM cid_paths
+      WHERE root_cid = ?
+        AND depth <= ?
+        AND (
+          lower(path) LIKE '%.html'
+          OR lower(path) LIKE '%.htm'
+          OR lower(path) LIKE '%.xhtml'
+        )
+      ORDER BY depth ASC, LENGTH(path) ASC
+      LIMIT ?
+    `,
+      [rootCid, maxDepth, maxCandidates]
+    );
+  } catch (err) {
+    logError('[dirExpander] failed to query cid_paths for entrypoint', rootCid, err);
+    return null;
+  }
+
+  let best = null;
+  let bestScore = -Infinity;
+  for (const r of rows) {
+    const p = String(r?.path || '').trim();
+    const leafCid = String(r?.leaf_cid || '').trim();
+    if (!p || !leafCid) continue;
+    const sc = scoreHtmlEntrypointPath(p);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = { cid: leafCid, path: p, score: sc };
+    }
+  }
+  return best;
+}
+
+async function maybeUpdateRootSiteEntrypoint(rootCid, links) {
+  const root = String(rootCid || '').trim();
+  if (!root) return null;
+
+  const fromPaths = await pickBestHtmlEntrypointFromCidPaths(root);
+  let entry = fromPaths;
+
+  if (!entry) {
+    const list = Array.isArray(links) ? links : [];
+    let best = null;
+    let bestScore = -Infinity;
+    for (const link of list) {
+      const name = String(link?.name || '').trim();
+      const cid = String(link?.cid || '').trim();
+      if (!name || !cid) continue;
+      if (!isHtmlLikeName(name)) continue;
+      const sc = scoreHtmlEntrypointPath(name);
+      if (sc > bestScore) {
+        bestScore = sc;
+        best = { cid, path: name, score: sc };
+      }
+    }
+    entry = best;
+  }
+
+  if (!entry) return null;
+
+  try {
+    const current = await dbGet(
+      'SELECT site_entry_path, site_entry_cid FROM cids WHERE cid = ?',
+      [root]
+    );
+    const curPath = String(current?.site_entry_path || '').trim();
+    const curCid = String(current?.site_entry_cid || '').trim();
+    if (curPath === entry.path && curCid === entry.cid) return entry;
+
+    await dbRun(
+      `UPDATE cids
+       SET site_entry_path = ?,
+           site_entry_cid = ?,
+           site_entry_indexed_at = ?,
+           updated_at = ?
+       WHERE cid = ?`,
+      [entry.path, entry.cid, nowMs(), nowMs(), root]
+    );
+  } catch (err) {
+    logError('[dirExpander] failed to persist root site entrypoint', root, err);
+  }
+
+  return entry;
 }
 
 async function updatePathsForDir(rootCid, links) {
@@ -279,41 +373,91 @@ async function updatePathsForDir(rootCid, links) {
     countRow && typeof countRow.c === 'number' ? countRow.c : 0;
   if (total >= PATH_MAX_FILES_PER_ROOT) return;
 
-  const seen = new Set();
+  const maxDirs = CONFIG.PATH_INDEX_MAX_DIRS_PER_ROOT || 200;
+  const maxChildren = CONFIG.DIR_EXPAND_MAX_CHILDREN || 1000;
+  const visitedDirs = new Set([rootCid]);
+  const seenPaths = new Set();
+  const dirQueue = [{ cid: rootCid, prefix: '', depth: 0, links }];
 
-  for (const link of links) {
-    const name = (link.name || '').trim();
-    const childCid = link.cid || link.Cid || link.Hash || null;
-    if (!name || !childCid) continue;
-    if (!shouldIndexPathName(name)) continue;
+  let processedDirs = 0;
 
-    const path = name;
-    const depth = 1;
-    if (depth > PATH_MAX_DEPTH) continue;
-    if (total >= PATH_MAX_FILES_PER_ROOT) break;
+  while (dirQueue.length) {
+    const cur = dirQueue.shift();
+    if (!cur) break;
+    processedDirs += 1;
+    if (processedDirs > maxDirs) break;
 
-    const key = `${rootCid}|${path}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    const mimeHint = guessMimeHintFromName(name);
-
-    try {
-      await dbRun(
-        `INSERT INTO cid_paths (root_cid, path, leaf_cid, depth, mime_hint)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(root_cid, path) DO UPDATE SET
-           leaf_cid = excluded.leaf_cid,
-           depth = excluded.depth,
-           mime_hint = COALESCE(excluded.mime_hint, mime_hint)
-        `,
-        [rootCid, path, childCid, depth, mimeHint]
-      );
-      total += 1;
+    const listRaw = Array.isArray(cur.links) ? cur.links : [];
+    const list = listRaw.length > maxChildren ? listRaw.slice(0, maxChildren) : listRaw;
+    for (const link of list) {
       if (total >= PATH_MAX_FILES_PER_ROOT) break;
-    } catch (err) {
-      logError('dirExpander: failed to upsert cid_paths', err);
+
+      const name = String(link?.name || '').trim();
+      const childCidRaw = link?.cid || link?.Cid || link?.Hash || null;
+      const childCid = String(childCidRaw || '').trim();
+      if (!name || !childCid) continue;
+
+      const relPath = cur.prefix ? `${cur.prefix}/${name}` : name;
+      const depth = cur.depth + 1;
+      if (depth > PATH_MAX_DEPTH) continue;
+
+      const type = String(link?.type || '').toLowerCase().trim();
+      const ext = getExtFromName(name.trim().toLowerCase());
+      const maybeDirName = !ext && !name.includes('.');
+      const isDir = type === 'dir' || (type === 'unknown' && maybeDirName);
+
+      if (isDir) {
+        if (cur.depth >= PATH_MAX_DEPTH) continue;
+        if (visitedDirs.has(childCid)) continue;
+        if (visitedDirs.size >= maxDirs) continue;
+        visitedDirs.add(childCid);
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const childLinks = await kuboLs(childCid);
+          const nextLinksRaw = Array.isArray(childLinks) ? childLinks : [];
+          const nextLinks =
+            nextLinksRaw.length > maxChildren
+              ? nextLinksRaw.slice(0, maxChildren)
+              : nextLinksRaw;
+          if (!nextLinks.length) continue;
+          dirQueue.push({
+            cid: childCid,
+            prefix: relPath,
+            depth,
+            links: nextLinks
+          });
+        } catch {
+          // ignore directory traversal errors
+        }
+        continue;
+      }
+
+      if (!shouldIndexPathName(name)) continue;
+
+      const key = `${rootCid}|${relPath}`;
+      if (seenPaths.has(key)) continue;
+      seenPaths.add(key);
+
+      const mimeHint = guessMimeHintFromName(name);
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await dbRun(
+          `INSERT INTO cid_paths (root_cid, path, leaf_cid, depth, mime_hint)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(root_cid, path) DO UPDATE SET
+             leaf_cid = excluded.leaf_cid,
+             depth = excluded.depth,
+             mime_hint = COALESCE(excluded.mime_hint, mime_hint)
+          `,
+          [rootCid, relPath, childCid, depth, mimeHint]
+        );
+        total += 1;
+      } catch (err) {
+        logError('dirExpander: failed to upsert cid_paths', err);
+      }
     }
+
+    if (total >= PATH_MAX_FILES_PER_ROOT) break;
   }
 }
 
@@ -327,9 +471,15 @@ function isLikelyDirectory(row) {
       ? row.expand_depth
       : 0;
 
-  // Always treat pin roots (depth 0, present_source='pinls') as directory
-  // candidates so we can discover children like about.html, params.html, etc.
-  if (presentSource === 'pinls' && depth === 0) return true;
+  // For pinned roots, only treat them as directory candidates when we don't have a
+  // clear non-directory kind yet (website folders, CAR/IPLD roots, etc.).
+  // This avoids marking pinned single-file PDFs/DOCX/EPUB as directories.
+  if (presentSource === 'pinls' && depth === 0) {
+    if (!mime && !kind) return true;
+    if (!kind) return true;
+    if (kind === 'unknown' || kind === 'ipld' || kind === 'dag') return true;
+    return false;
+  }
 
   if (!mime && !kind) return true;
   if (!kind) return true;
@@ -455,14 +605,14 @@ async function expandOne(row, maxChildren) {
     await dbRun(
       `
       UPDATE cids
-      SET is_directory = 0,
+      SET is_directory = 1,
           expanded_at = ?,
           expand_error = NULL
       WHERE cid = ?
     `,
       [now, row.cid]
     );
-    return { expanded: false };
+    return { expanded: true };
   }
 
   const parentDepth =
@@ -547,16 +697,6 @@ async function expandOne(row, maxChildren) {
       );
     }
 
-    // Per-directory path index (CID/filename) for interesting types
-    const isPinRoot = row.present_source === 'pinls';
-    if (isPinRoot) {
-      try {
-        await updatePathsForDir(row.cid, limitedLinks);
-      } catch (err) {
-        logError('dirExpander: updatePathsForDir failed for root', row.cid, err);
-      }
-    }
-
     if (trackEdges && pruneChildren) {
       const existingEdges = await dbAll(
         'SELECT child_cid FROM cid_edges WHERE parent_cid = ?',
@@ -595,9 +735,27 @@ async function expandOne(row, maxChildren) {
     }
   });
 
+  // Per-directory path index (CID/path) for pin roots only.
+  // Done outside the DB transaction since it can involve multiple Kubo ls calls.
+  const isPinRoot = row.present_source === 'pinls';
+  if (isPinRoot) {
+    try {
+      await updatePathsForDir(row.cid, limitedLinks);
+    } catch (err) {
+      logError('dirExpander: updatePathsForDir failed for root', row.cid, err);
+    }
+  }
+
   if (shouldTagRootSite) {
     try {
-      await maybeUpdateRootSiteTags(row.cid, limitedLinks);
+      const entry = await maybeUpdateRootSiteEntrypoint(row.cid, limitedLinks);
+      if (entry && entry.cid && entry.path) {
+        await maybeUpdateRootSiteTags(row.cid, [
+          { cid: entry.cid, name: entry.path, size: null, type: 'file' }
+        ]);
+      } else {
+        await maybeUpdateRootSiteTags(row.cid, limitedLinks);
+      }
     } catch (err) {
       logError('[dirExpander] root tag derivation failed', row.cid, err);
     }

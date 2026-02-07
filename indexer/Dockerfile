@@ -1,9 +1,9 @@
-FROM node:18-bullseye-slim
+FROM node:20-bullseye-slim
 
 WORKDIR /app/indexer
 
 COPY indexer/package*.json ./
-RUN npm install --omit=dev
+RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY indexer/. .
 

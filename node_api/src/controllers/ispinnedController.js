@@ -1,6 +1,6 @@
-import crypto from 'node:crypto';
 import { kuboRequest } from '../lib/kuboClient.js';
 import { hasWalletRoot, hasWalletPin } from '../lib/walletDb.js';
+import { sendPqJson } from '../lib/pqResponse.js';
 
 export async function getIsPinned(req, res) {
   try {
@@ -13,32 +13,7 @@ export async function getIsPinned(req, res) {
       cid = String(req.body.cid || '').trim();
     }
 
-    const send = (statusCode, body) => {
-      const aesKey = req.pqAesKey;
-      if (aesKey && Buffer.isBuffer(aesKey)) {
-        try {
-          const plaintext = Buffer.from(JSON.stringify(body ?? null), 'utf8');
-          const iv = crypto.randomBytes(12);
-          const cipher = crypto.createCipheriv('aes-256-gcm', aesKey, iv);
-          const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-          const tag = cipher.getAuthTag();
-
-          return res.status(statusCode).json({
-            ciphertext: ct.toString('base64'),
-            iv: iv.toString('base64'),
-            tag: tag.toString('base64')
-          });
-        } catch (encErr) {
-          // eslint-disable-next-line no-console
-          console.error('[api:/ispinned] pq response encrypt error', encErr);
-          return res
-            .status(500)
-            .json({ error: 'pq_encrypt_failed', message: 'failed_to_encrypt_response' });
-        }
-      }
-
-      return res.status(statusCode).json(body);
-    };
+    const send = (statusCode, body) => sendPqJson(req, res, statusCode, body, 'api:/ispinned');
 
     if (!cid) return send(400, { error: 'cid_required' });
 
@@ -48,7 +23,8 @@ export async function getIsPinned(req, res) {
       const resp = await kuboRequest(
         `/api/v0/pin/ls?arg=${encodeURIComponent(
           cid
-        )}&type=recursive&stream=false&quiet=false`
+        )}&type=recursive&stream=false&quiet=false`,
+        { timeoutMs: 4000 }
       );
       if (resp.ok) {
         const text = await resp.text();
@@ -82,26 +58,7 @@ export async function getIsPinned(req, res) {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[api:/ispinned] error', err);
-    const aesKey = req.pqAesKey;
-    if (aesKey && Buffer.isBuffer(aesKey)) {
-      try {
-        const plaintext = Buffer.from(JSON.stringify({ error: 'internal_error' }), 'utf8');
-        const iv = crypto.randomBytes(12);
-        const cipher = crypto.createCipheriv('aes-256-gcm', aesKey, iv);
-        const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-        const tag = cipher.getAuthTag();
-
-        return res.status(500).json({
-          ciphertext: ct.toString('base64'),
-          iv: iv.toString('base64'),
-          tag: tag.toString('base64')
-        });
-      } catch (encErr) {
-        // eslint-disable-next-line no-console
-        console.error('[api:/ispinned] pq response encrypt error in catch', encErr);
-      }
-    }
-    res.status(500).json({ error: 'internal_error' });
+    return sendPqJson(req, res, 500, { error: 'internal_error' }, 'api:/ispinned');
   }
 }
 

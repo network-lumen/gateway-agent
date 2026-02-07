@@ -1,9 +1,13 @@
-import crypto from 'node:crypto';
 import { Secp256k1, Secp256k1Signature, Sha256, Ripemd160 } from '@cosmjs/crypto';
 import { toBech32 } from '@cosmjs/encoding';
 
 const REPLAY_WINDOW_SEC = 300; // 5 minutes
 const NONCE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const NONCE_MAX_ENTRIES = (() => {
+  const n = Number(process.env.SIG_NONCE_MAX_ENTRIES);
+  if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+  return 20_000;
+})();
 
 const nonces = new Map(); // nonce -> ts
 
@@ -127,10 +131,26 @@ async function verifySecp256k1(addr, payload, sigInput) {
 }
 
 function purgeNonces(nowMs) {
-  for (const [nonce, ts] of nonces.entries()) {
+  // Purge from the front (Map preserves insertion order).
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const first = nonces.entries().next().value;
+    if (!first) return;
+    const [nonce, ts] = first;
     if (nowMs - Number(ts || 0) > NONCE_TTL_MS) {
       nonces.delete(nonce);
+      continue;
     }
+    return;
+  }
+}
+
+function enforceNonceCap() {
+  if (!Number.isFinite(NONCE_MAX_ENTRIES) || NONCE_MAX_ENTRIES <= 0) return;
+  while (nonces.size > NONCE_MAX_ENTRIES) {
+    const first = nonces.keys().next().value;
+    if (!first) return;
+    nonces.delete(first);
   }
 }
 
@@ -157,6 +177,7 @@ export async function verifyRequestSignature(req) {
   }
 
   purgeNonces(now);
+  enforceNonceCap();
   if (nonces.has(nonce)) {
     return { ok: false, status: 401, error: 'auth_failed', message: 'nonce_replay' };
   }
@@ -168,6 +189,7 @@ export async function verifyRequestSignature(req) {
   }
 
   nonces.set(nonce, ts);
+  enforceNonceCap();
   return { ok: true, wallet: addr };
 }
 

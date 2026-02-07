@@ -1,11 +1,11 @@
-import crypto from 'node:crypto';
 import { getWalletPinnedCidsPage } from '../lib/walletDb.js';
+import { sendPqJson } from '../lib/pqResponse.js';
 
 export async function getWalletPinnedCids(req, res) {
   try {
     const wallet = String(req.wallet || '').trim();
     if (!wallet) {
-      return res.status(400).json({ error: 'wallet_required' });
+      return sendPqJson(req, res, 400, { error: 'wallet_required' }, 'api:/wallet/cids');
     }
 
     const rawPage =
@@ -36,53 +36,11 @@ export async function getWalletPinnedCids(req, res) {
       has_more: hasMore
     };
 
-    const aesKey = req.pqAesKey;
-    if (aesKey && Buffer.isBuffer(aesKey)) {
-      try {
-        const plaintext = Buffer.from(JSON.stringify(body ?? null), 'utf8');
-        const iv = crypto.randomBytes(12);
-        const cipher = crypto.createCipheriv('aes-256-gcm', aesKey, iv);
-        const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-        const tag = cipher.getAuthTag();
-
-        return res.json({
-          ciphertext: ct.toString('base64'),
-          iv: iv.toString('base64'),
-          tag: tag.toString('base64')
-        });
-      } catch (encErr) {
-        // eslint-disable-next-line no-console
-        console.error('[api:/wallet/cids] pq response encrypt error', encErr);
-        return res
-          .status(500)
-          .json({ error: 'pq_encrypt_failed', message: 'failed_to_encrypt_response' });
-      }
-    }
-
-    return res.json(body);
+    return sendPqJson(req, res, 200, body, 'api:/wallet/cids');
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[api:/wallet/cids] error', err);
-    const aesKey = req.pqAesKey;
-    if (aesKey && Buffer.isBuffer(aesKey)) {
-      try {
-        const plaintext = Buffer.from(JSON.stringify({ error: 'internal_error' }), 'utf8');
-        const iv = crypto.randomBytes(12);
-        const cipher = crypto.createCipheriv('aes-256-gcm', aesKey, iv);
-        const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-        const tag = cipher.getAuthTag();
-
-        return res.status(500).json({
-          ciphertext: ct.toString('base64'),
-          iv: iv.toString('base64'),
-          tag: tag.toString('base64')
-        });
-      } catch (encErr) {
-        // eslint-disable-next-line no-console
-        console.error('[api:/wallet/cids] pq response encrypt error in catch', encErr);
-      }
-    }
-    return res.status(500).json({ error: 'internal_error' });
+    return sendPqJson(req, res, 500, { error: 'internal_error' }, 'api:/wallet/cids');
   }
 }
 

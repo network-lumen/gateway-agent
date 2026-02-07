@@ -17,7 +17,7 @@ async function getIpfsStatus() {
     return { online: lastIpfsOnline, lastCheckAt: lastIpfsCheckAt };
   }
   try {
-    const resp = await kuboRequest('/api/v0/version');
+    const resp = await kuboRequest('/api/v0/version', { timeoutMs: 2000 });
     lastIpfsOnline = resp.ok;
   } catch {
     lastIpfsOnline = false;

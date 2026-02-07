@@ -4,51 +4,92 @@ import { detectTypeForCid, DETECTOR_VERSION } from './detectType.js';
 import { buildTags } from './tags.js';
 import { analyzeContentForCid, mapContentClassFromKind } from './contentSniffer.js';
 import { incrementTypesIndexed } from './metrics.js';
-import { nowMs, readResponseBodyLimited } from './utils.js';
+import { nowMs } from './utils.js';
 import { log, logError } from './log.js';
 
 let timer = null;
 let running = false;
 
-const DEBUG_ENABLED = CONFIG.TYPECRAWLER_DEBUG;
-const DEBUG_MAX_EVENTS = 50;
+const TOKEN_INDEX_MAX =
+  typeof CONFIG.SEARCH_TOKEN_INDEX_MAX_TOKENS === 'number' &&
+  CONFIG.SEARCH_TOKEN_INDEX_MAX_TOKENS > 0
+    ? CONFIG.SEARCH_TOKEN_INDEX_MAX_TOKENS
+    : 128;
 
-const debugState = {
-  lastRun: null,
-  events: []
-};
+function extractIndexableTokens(tagsJson) {
+  const tokensObj =
+    tagsJson && tagsJson.tokens && typeof tagsJson.tokens === 'object'
+      ? tagsJson.tokens
+      : null;
+  if (!tokensObj) return [];
 
-function pushDebugEvent(evt) {
-  if (!DEBUG_ENABLED) return;
-  const event = {
-    ts: nowMs(),
-    ...evt
-  };
-  debugState.events.push(event);
-  if (debugState.events.length > DEBUG_MAX_EVENTS) {
-    debugState.events.splice(0, debugState.events.length - DEBUG_MAX_EVENTS);
+  const pairs = [];
+  for (const [rawToken, rawCount] of Object.entries(tokensObj)) {
+    const token = String(rawToken || '').trim().toLowerCase();
+    if (!token) continue;
+    if (token.length < 3) continue;
+    if (/\s/.test(token)) continue;
+    if (!/^[a-z0-9]+$/.test(token)) continue;
+
+    const count = Number(rawCount);
+    if (!Number.isFinite(count) || count <= 0) continue;
+    pairs.push([token, Math.min(1000, Math.floor(count))]);
   }
-}
 
-export function getTypeCrawlerDebugSnapshot() {
-  return {
-    debugEnabled: DEBUG_ENABLED,
-    lastRun: debugState.lastRun,
-    events: debugState.events
-  };
+  pairs.sort((a, b) => {
+    if (b[1] !== a[1]) return b[1] - a[1];
+    return String(a[0]).localeCompare(String(b[0]));
+  });
+
+  return pairs.slice(0, TOKEN_INDEX_MAX);
 }
 
 export async function runTypeCrawlOnce() {
+  const now = nowMs();
+  const retryTtlSeconds =
+    typeof CONFIG.DOC_EXTRACT_RETRY_TTL_SECONDS === 'number' &&
+    CONFIG.DOC_EXTRACT_RETRY_TTL_SECONDS > 0
+      ? CONFIG.DOC_EXTRACT_RETRY_TTL_SECONDS
+      : 6 * 60 * 60;
+  const docRetryCutoff = now - retryTtlSeconds * 1000;
+  const docRetryCutoffIso = new Date(docRetryCutoff).toISOString();
+
   const candidates = await dbAll(
     `SELECT cid, present, size_bytes, detector_version, error,
-            is_directory, present_source
+            is_directory, present_source, mime, kind, indexed_at
      FROM cids
      WHERE present = 1
-       AND (detector_version IS NULL
-         OR detector_version <> ?
-         OR mime IS NULL
-         OR error IS NOT NULL)`,
-    [DETECTOR_VERSION]
+        AND (detector_version IS NULL
+          OR detector_version <> ?
+          OR mime IS NULL
+          OR error IS NOT NULL
+          OR (
+            kind = 'text'
+            AND (tags_json IS NULL OR tags_json NOT LIKE '%"preview"%')
+          )
+          OR (
+            kind = 'doc'
+            AND tags_json LIKE '%"description":"PK%'
+          )
+          OR (
+            kind = 'doc'
+            AND (ext_guess = 'epub' OR mime LIKE '%epub%')
+            AND (tags_json IS NULL OR tags_json NOT LIKE '%doc:epub_text_v2%')
+            AND (tags_json IS NULL OR tags_json NOT LIKE '%doc:epub_parse_failed%')
+          )
+          OR (
+            kind = 'doc'
+            AND (
+              tags_json IS NULL
+              OR tags_json LIKE '%doc:sample%'
+              OR tags_json LIKE '%doc:too_large%'
+              OR tags_json LIKE '%doc:full_fetch_failed%'
+              OR tags_json LIKE '%doc:pdf_url_extract_failed%'
+            )
+            AND (tags_json IS NULL OR tags_json NOT LIKE '%doc:epub_parse_failed%')
+            AND (indexed_at IS NULL OR indexed_at < ?)
+          ))`,
+    [DETECTOR_VERSION, docRetryCutoffIso]
   );
 
   if (!candidates.length) {
@@ -81,14 +122,14 @@ export async function runTypeCrawlOnce() {
       const row = candidates[current];
       processed += 1;
 
-      if (row.is_directory === 1) {
+      const rowKind = row.kind ?? null;
+      const rowMime = row.mime ?? null;
+      const shouldSkipAsDir =
+        row.is_directory === 1 &&
+        (!rowKind || rowKind === 'unknown' || rowKind === 'ipld' || rowKind === 'dag' || !rowMime);
+
+      if (shouldSkipAsDir) {
         stats.skipped += 1;
-        pushDebugEvent({
-          type: 'skip',
-          reason: 'is_directory',
-          cid: row.cid,
-          present_source: row.present_source ?? null
-        });
         continue;
       }
 
@@ -97,17 +138,6 @@ export async function runTypeCrawlOnce() {
       try {
         const detection = await detectTypeForCid(row.cid, {
           sizeBytes: row.size_bytes ?? undefined
-        });
-
-        pushDebugEvent({
-          type: 'detect_ok',
-          cid: row.cid,
-          mime: detection.mime || null,
-          ext_guess: detection.ext_guess || null,
-          kind: detection.kind || null,
-          confidence: detection.confidence ?? null,
-          source: detection.source || null,
-          size: detection.size ?? null
         });
 
         const tagsArray = buildTags({ detection });
@@ -140,6 +170,7 @@ export async function runTypeCrawlOnce() {
           tags: tagsArray
         };
         const now = nowMs();
+        const tokenPairs = extractIndexableTokens(tagsJson);
 
         const stmt = await dbRun(
           `UPDATE cids
@@ -172,14 +203,20 @@ export async function runTypeCrawlOnce() {
           ]
         );
 
-        const changes =
-          stmt && typeof stmt.changes === 'number' ? stmt.changes : null;
-
-        pushDebugEvent({
-          type: 'db_update',
-          cid: row.cid,
-          changes
-        });
+        try {
+          await dbRun('DELETE FROM cid_tokens WHERE cid = ?', [row.cid]);
+          if (tokenPairs.length) {
+            for (const [token, count] of tokenPairs) {
+              // eslint-disable-next-line no-await-in-loop
+              await dbRun(
+                'INSERT OR REPLACE INTO cid_tokens (token, cid, count) VALUES (?, ?, ?)',
+                [token, row.cid, count]
+              );
+            }
+          }
+        } catch (tokenErr) {
+          logError('[typeCrawler] failed to update cid_tokens for cid', row.cid, tokenErr);
+        }
 
         updated += 1;
         stats.ok += 1;
@@ -207,11 +244,6 @@ export async function runTypeCrawlOnce() {
             dbErr
           );
         }
-        pushDebugEvent({
-          type: 'error',
-          cid: row.cid,
-          message: err && err.message ? err.message : String(err)
-        });
         logError('[typeCrawler] detect error for cid', row.cid, err);
       }
     }
@@ -229,102 +261,12 @@ export async function runTypeCrawlOnce() {
 
   const durationMs = nowMs() - startedAt;
   stats.finishedAt = nowMs();
-  debugState.lastRun = stats;
 
   log(
     `[typeCrawler] candidates=${stats.candidates} processed=${processed} attempted=${stats.attempted} ok=${stats.ok} skipped=${stats.skipped} failed=${stats.failed} duration=${durationMs}ms`
   );
 
   return { processed, updated };
-}
-
-export async function sampleDebugForCid(cid) {
-  const SAMPLE_BYTES = CONFIG.SAMPLE_BYTES;
-  const url = new URL(`/ipfs/${cid}`, CONFIG.IPFS_GATEWAY_BASE).toString();
-
-  const result = {
-    cid,
-    head: null,
-    tail: null,
-    mid: null,
-    detect: null,
-    supports_range: null,
-    range_status: null,
-    range_ignored: null,
-    bytes_returned: null,
-    warnings: []
-  };
-
-  // HEAD size probe
-  try {
-    const resp = await fetch(url, { method: 'HEAD' });
-    result.head = {
-      url,
-      status: resp.status,
-      content_length: resp.headers.get('content-length') || null
-    };
-  } catch (err) {
-    result.head = {
-      url,
-      error: err && err.message ? err.message : String(err)
-    };
-  }
-
-  // Simple range helpers for debug (best-effort)
-  async function fetchRangeDebug(rangeStart, rangeEnd) {
-    const r = `bytes=${rangeStart}-${rangeEnd}`;
-    const resp = await fetch(url, {
-      method: 'GET',
-      headers: { Range: r }
-    });
-    const contentRange = resp.headers.get('content-range') || null;
-    const supportsRange = resp.status === 206 || !!contentRange;
-    const rangeIgnored = resp.status === 200 && !contentRange;
-    if (rangeIgnored) {
-      result.warnings.push('range_not_supported_fallback_used');
-    }
-    const buf = await readResponseBodyLimited(resp, SAMPLE_BYTES);
-    result.supports_range = supportsRange;
-    result.range_status = resp.status;
-    result.range_ignored = rangeIgnored;
-    result.bytes_returned = buf.length;
-    return {
-      url,
-      range: r,
-      status: resp.status,
-      content_range: contentRange,
-      content_length: resp.headers.get('content-length') || null,
-      bytes: buf.subarray(0, 256).toString('hex')
-    };
-  }
-
-  try {
-    result.sample = await fetchRangeDebug(0, SAMPLE_BYTES - 1);
-  } catch (err) {
-    result.sample = {
-      url,
-      error: err && err.message ? err.message : String(err)
-    };
-  }
-
-  // Run full detector as well, to expose normalized result
-  try {
-    const detection = await detectTypeForCid(cid);
-    result.detect = {
-      mime: detection.mime || null,
-      ext_guess: detection.ext_guess || null,
-      kind: detection.kind || null,
-      confidence: detection.confidence ?? null,
-      source: detection.source || null,
-      size: detection.size ?? null
-    };
-  } catch (err) {
-    result.detect = {
-      error: err && err.message ? err.message : String(err)
-    };
-  }
-
-  return result;
 }
 
 export function startTypeCrawlerWorker() {

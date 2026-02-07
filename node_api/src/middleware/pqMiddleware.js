@@ -2,17 +2,51 @@ import { ml_kem768 } from '@noble/post-quantum/ml-kem.js';
 import crypto from 'node:crypto';
 import { getKyberContext } from '../lib/kyberContext.js';
 import { verifyWalletCanonicalSignature } from '../lib/authSig.js';
+import { CONFIG } from '../config.js';
 
 const REPLAY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const NONCE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const NONCE_MAX_ENTRIES = (() => {
+  const n = Number(process.env.PQ_NONCE_MAX_ENTRIES);
+  if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+  return 20_000;
+})();
 
 const nonces = new Map(); // nonce -> ts
 
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isWalletSyntaxValid(wallet) {
+  const hrp = String(CONFIG.ADDR_HRP || 'lmn').trim() || 'lmn';
+  const re = new RegExp(`^${escapeRegex(hrp)}1[0-9a-z]+$`);
+  return re.test(String(wallet || '').trim());
+}
+
 function purgeNonces(nowMs) {
-  for (const [nonce, ts] of nonces.entries()) {
+  // Map preserves insertion order. Since nonces are added in real time and their timestamps are bounded
+  // by the replay window, old entries tend to be clustered at the front.
+  // Purge from the front to avoid O(n) scans on every request.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const first = nonces.entries().next().value;
+    if (!first) return;
+    const [nonce, ts] = first;
     if (nowMs - Number(ts || 0) > NONCE_TTL_MS) {
       nonces.delete(nonce);
+      continue;
     }
+    return;
+  }
+}
+
+function enforceNonceCap() {
+  if (!Number.isFinite(NONCE_MAX_ENTRIES) || NONCE_MAX_ENTRIES <= 0) return;
+  while (nonces.size > NONCE_MAX_ENTRIES) {
+    const first = nonces.keys().next().value;
+    if (!first) return;
+    nonces.delete(first);
   }
 }
 
@@ -57,8 +91,7 @@ export async function decryptPqRequest(req) {
   }
 
   const kemHeader = String(req.header('X-Lumen-KEM') || '').trim().toLowerCase();
-  const keyIdHeader =
-    String(req.header('X-Lumen-KeyId') || req.header('X-Lumen-KeyID') || '').trim();
+  const keyIdHeader = String(req.header('X-Lumen-KeyId') || req.header('X-Lumen-KeyID') || '').trim();
 
   if (kemHeader !== 'kyber768') {
     return {
@@ -180,7 +213,7 @@ export async function decryptPqRequest(req) {
     };
   }
 
-  if (!/^lmn1[0-9a-z]+$/.test(wallet)) {
+  if (!isWalletSyntaxValid(wallet)) {
     return {
       ok: false,
       status: 400,
@@ -219,6 +252,7 @@ export async function decryptPqRequest(req) {
   }
 
   purgeNonces(now);
+  enforceNonceCap();
   if (nonces.has(nonce)) {
     return {
       ok: false,

@@ -1,8 +1,6 @@
 function categoryFromKind(kind) {
   switch (kind) {
     case 'image':
-    case 'video':
-    case 'audio':
       return 'media';
     case 'doc':
     case 'html':
@@ -10,6 +8,7 @@ function categoryFromKind(kind) {
       return 'document';
     case 'archive':
     case 'ipld':
+    case 'package':
       return 'package';
     default:
       return 'unknown';
@@ -39,18 +38,6 @@ function sizeBucket(size) {
   return 'xxl';
 }
 
-function durationBucket(seconds) {
-  if (!Number.isFinite(seconds) || seconds <= 0) return null;
-  const shortMax = 10 * 60;
-  const mediumMax = 60 * 60;
-  const longMax = 3 * 60 * 60;
-
-  if (seconds <= shortMax) return 'short';
-  if (seconds <= mediumMax) return 'medium';
-  if (seconds <= longMax) return 'long';
-  return null;
-}
-
 export function buildTags({ detection }) {
   const tags = [];
   const kind = detection.kind || 'unknown';
@@ -72,22 +59,6 @@ export function buildTags({ detection }) {
   const bucket = sizeBucket(size);
   if (bucket) {
     tags.push(`size_bucket:${bucket}`);
-    if (kind === 'audio') {
-      tags.push(`audio_size_bucket:${bucket}`);
-    }
-  }
-
-  if (kind === 'video') {
-    const signals = detection.signals || {};
-    const media = signals.media || null;
-    const seconds =
-      media && typeof media.duration_seconds === 'number'
-        ? media.duration_seconds
-        : null;
-    const durBucket = durationBucket(seconds);
-    if (durBucket) {
-      tags.push(`video_duration:${durBucket}`);
-    }
   }
 
   // Container / format derived tags
@@ -96,8 +67,6 @@ export function buildTags({ detection }) {
 
   if (container.type === 'zip') {
     tags.push('container:zip');
-  } else if (container.type === 'mp4') {
-    tags.push('container:mp4');
   } else if (container.type === 'pdf') {
     tags.push('container:pdf');
   } else if (container.type === 'car') {
@@ -117,12 +86,8 @@ export function buildTags({ detection }) {
     tags.push('ebook:epub');
   }
 
-  if (kind === 'video' || kind === 'audio') {
-    tags.push('streamable:maybe');
-  }
-
   // Needs further enrichment
-  if (kind === 'image' || kind === 'video' || kind === 'audio') {
+  if (kind === 'image') {
     tags.push('needs:metadata');
     tags.push('needs:ai_tags');
   } else if (kind === 'doc' || kind === 'html' || kind === 'text') {

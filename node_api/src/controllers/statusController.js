@@ -19,7 +19,7 @@ try {
 export async function getStatus(_req, res) {
   let ipfsOnline = false;
   try {
-    const resp = await kuboRequest('/api/v0/version');
+    const resp = await kuboRequest('/api/v0/version', { timeoutMs: 2000 });
     ipfsOnline = resp.ok;
   } catch {
     ipfsOnline = false;

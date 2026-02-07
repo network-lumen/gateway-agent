@@ -12,28 +12,12 @@
   },
   "pricing": [
     {
-      "id": "basic",
-      "gbMonth": 100,
-      "priceLMN": 5,
-      "maxEgressGBMonth": 1000,
-      "notes": "Starter plan",
-      "monthsTotal": 12
-    },
-    {
-      "id": "pro",
-      "gbMonth": 1000,
-      "maxEgressGBMonth": 10000,
-      "priceLMN": 20,
-      "notes": "For creators",
-      "monthsTotal": 12
-    },
-    {
-      "id": "enterprise",
-      "gbMonth": 10000,
-      "maxEgressGBMonth": 100000,
-      "priceLMN": 120,
-      "notes": "High volume",
-      "monthsTotal": 12
+      "id": "beta",
+      "gbMonth": 1,
+      "priceLMN": 0.5,
+      "maxEgressGBMonth": 100,
+      "notes": "Beta plan",
+      "monthsTotal": 1
     }
   ],
   "webhook": {

@@ -1,8 +1,6 @@
-version: "3.8"
-
 services:
   ipfs:
-    image: ipfs/kubo:latest
+    image: ${KUBO_IMAGE:-ipfs/kubo@sha256:8bc99f94ea109f27ac408354e92b74f4f6f804fe0b4576f424520a20475dc88e}
     restart: unless-stopped
     environment:
       IPFS_PROFILE: server
@@ -13,8 +11,8 @@ services:
     ports:
       - "4001:4001/tcp"
       - "4001:4001/udp"
-      - "5001:5001"
-      - "18080:8080"
+      - "${KUBO_API_BIND:-127.0.0.1}:5001:5001"
+      - "${KUBO_GATEWAY_BIND:-127.0.0.1}:18080:8080"
     entrypoint:
       - sh
       - -c
@@ -46,15 +44,26 @@ services:
       - KUBO_API_BASE=http://ipfs:5001
       - IPFS_GATEWAY_BASE=http://ipfs:8080
       - INDEXER_DB_PATH=/data/indexer.sqlite
+      - INDEXER_SQLITE_BUSY_TIMEOUT_MS=${INDEXER_SQLITE_BUSY_TIMEOUT_MS:-5000}
       - INDEXER_PORT=8790
       - PIN_LS_REFRESH_SECONDS=30
+      - DOC_EXTRACT_RETRY_TTL_SECONDS=60
+      - TRANSFORMERS_CACHE_DIR=${TRANSFORMERS_CACHE_DIR:-/data/transformers-cache}
+      - TRANSFORMERS_LOCAL_FILES_ONLY=${TRANSFORMERS_LOCAL_FILES_ONLY:-0}
+      - TRANSFORMERS_REVISION=${TRANSFORMERS_REVISION:-main}
+      - TEXT_TAGGER_ENABLE=${TEXT_TAGGER_ENABLE:-1}
+      - IMAGE_TAGGER_ENABLE=${IMAGE_TAGGER_ENABLE:-1}
+      - TEXT_TAGGER_MODEL=${TEXT_TAGGER_MODEL:-Xenova/distilbert-base-uncased-mnli}
+      - IMAGE_TAGGER_MODEL=${IMAGE_TAGGER_MODEL:-Xenova/clip-vit-base-patch32}
+      - ML_WORKER_ENABLE=${ML_WORKER_ENABLE:-1}
+      - ML_WORKER_TASK_TIMEOUT_MS=${ML_WORKER_TASK_TIMEOUT_MS:-120000}
     volumes:
       - /opt/lumen/gateway/indexer_data:/data
     depends_on:
       ipfs:
         condition: service_healthy
     ports:
-      - "8790:8790"
+      - "${INDEXER_BIND:-127.0.0.1}:8790:8790"
     healthcheck:
       test:
         [
@@ -74,8 +83,13 @@ services:
     restart: unless-stopped
     environment:
       - NODE_API_WALLET_DB_PATH=/data/node_api/wallets.sqlite
-      - CHAIN_REST_BASE_URL=http://142.132.201.187:1317
+      - NODE_API_SQLITE_BUSY_TIMEOUT_MS=${NODE_API_SQLITE_BUSY_TIMEOUT_MS:-5000}
+      - CHAIN_REST_BASE_URL=${CHAIN_REST_BASE_URL:-}
       - LUMEN_GATEWAY_KYBER_KEY_PATH=/secrets/kyber.json
+      - KUBO_REQUEST_TIMEOUT_MS=${KUBO_REQUEST_TIMEOUT_MS:-15000}
+      - KUBO_IMPORT_TIMEOUT_MS=${KUBO_IMPORT_TIMEOUT_MS:-300000}
+      - ADDR_HRP=${ADDR_HRP:-}
+      - INGEST_TMP_DIR=${INGEST_TMP_DIR:-}
       - REGION=${REGION:-}
       - PUBLIC_ENDPOINT=${PUBLIC_ENDPOINT:-}
     volumes:
@@ -104,7 +118,7 @@ services:
       start_period: 20s
 
   prometheus:
-    image: prom/prometheus:latest
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus@sha256:49214755b6153f90a597adcbff0252cc61069f8ab69ce8411285cd4a560e8038}
     restart: unless-stopped
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -115,15 +129,15 @@ services:
         condition: service_healthy
 
   grafana:
-    image: grafana/grafana:latest
+    image: ${GRAFANA_IMAGE:-grafana/grafana@sha256:70d9599b186ce287be0d2c5ba9a78acb2e86c1a68c9c41449454d0fc3eeb84e8}
     restart: unless-stopped
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
-      - "3000:3000"
+      - "${GRAFANA_BIND:-127.0.0.1}:3000:3000"
     depends_on:
       - prometheus
 

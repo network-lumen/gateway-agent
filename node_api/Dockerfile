@@ -1,9 +1,9 @@
-FROM node:18-bullseye-slim
+FROM node:20-bullseye-slim
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm install --production
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY src ./src
 COPY datasets ./datasets

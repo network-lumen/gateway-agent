@@ -1,11 +1,29 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import sqlite3 from 'sqlite3';
 import { CONFIG } from './config.js';
 import { log, logError } from './log.js';
 
+const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5000;
+const SQLITE_BUSY_TIMEOUT_MS = (() => {
+  const raw = String(process.env.INDEXER_SQLITE_BUSY_TIMEOUT_MS || '').trim();
+  if (!raw) return DEFAULT_SQLITE_BUSY_TIMEOUT_MS;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n)) return DEFAULT_SQLITE_BUSY_TIMEOUT_MS;
+  return Math.min(Math.max(n, 0), 60_000);
+})();
+
 let dbInstance = null;
 let initPromise = null;
+let opQueue = Promise.resolve();
+const txStore = new AsyncLocalStorage();
+
+function queueDbOp(work) {
+  const next = opQueue.then(work, work);
+  opQueue = next.catch(() => undefined);
+  return next;
+}
 
 function openDb(dbPath) {
   return new Promise((resolve, reject) => {
@@ -13,9 +31,19 @@ function openDb(dbPath) {
       if (err) {
         reject(err);
       } else {
+        try {
+          db.configure('busyTimeout', SQLITE_BUSY_TIMEOUT_MS);
+        } catch {
+          // ignore
+        }
         resolve(db);
       }
     });
+    try {
+      db.serialize();
+    } catch {
+      // ignore
+    }
   });
 }
 
@@ -90,6 +118,21 @@ async function ensureSchemaMigrations(db) {
     if (!names.has('present_reason')) {
       alters.push(
         'ALTER TABLE cids ADD COLUMN present_reason TEXT'
+      );
+    }
+    if (!names.has('site_entry_path')) {
+      alters.push(
+        'ALTER TABLE cids ADD COLUMN site_entry_path TEXT'
+      );
+    }
+    if (!names.has('site_entry_cid')) {
+      alters.push(
+        'ALTER TABLE cids ADD COLUMN site_entry_cid TEXT'
+      );
+    }
+    if (!names.has('site_entry_indexed_at')) {
+      alters.push(
+        'ALTER TABLE cids ADD COLUMN site_entry_indexed_at INTEGER'
       );
     }
 
@@ -169,6 +212,32 @@ async function ensureSchemaMigrations(db) {
     logError('Failed to ensure cid_paths schema', err);
   }
 
+  // Ensure cid_tokens table exists (token -> cid inverted index for search)
+  try {
+    await exec(
+      db,
+      `
+      CREATE TABLE IF NOT EXISTS cid_tokens (
+        token TEXT NOT NULL,
+        cid TEXT NOT NULL,
+        count INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (token, cid)
+      );
+      CREATE INDEX IF NOT EXISTS idx_cid_tokens_cid ON cid_tokens(cid);
+    `
+    );
+  } catch (err) {
+    logError('Failed to ensure cid_tokens schema', err);
+  }
+
+  // Gateway policy: keep the token index compact. Short tokens (< 3 chars) are too noisy and
+  // can explode the cid_tokens table size, so prune any legacy rows.
+  try {
+    await exec(db, 'DELETE FROM cid_tokens WHERE LENGTH(token) < 3');
+  } catch (err) {
+    logError('Failed to prune short cid_tokens rows', err);
+  }
+
   // Ensure metrics row id=1 exists
   try {
     await exec(
@@ -205,6 +274,9 @@ export async function initDb() {
 
     try {
       await exec(db, 'PRAGMA journal_mode = WAL;');
+      await exec(db, 'PRAGMA synchronous = NORMAL;');
+      await exec(db, 'PRAGMA foreign_keys = ON;');
+      await exec(db, `PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};`);
       await exec(
         db,
         `
@@ -266,33 +338,65 @@ export async function getDb() {
 }
 
 export async function dbRun(sql, params = []) {
-  const db = await getDb();
-  return run(db, sql, params);
+  const tx = txStore.getStore();
+  if (tx && tx.db) {
+    return run(tx.db, sql, params);
+  }
+  return queueDbOp(async () => {
+    const db = await getDb();
+    return run(db, sql, params);
+  });
 }
 
 export async function dbGet(sql, params = []) {
-  const db = await getDb();
-  return get(db, sql, params);
+  const tx = txStore.getStore();
+  if (tx && tx.db) {
+    return get(tx.db, sql, params);
+  }
+  return queueDbOp(async () => {
+    const db = await getDb();
+    return get(db, sql, params);
+  });
 }
 
 export async function dbAll(sql, params = []) {
-  const db = await getDb();
-  return all(db, sql, params);
+  const tx = txStore.getStore();
+  if (tx && tx.db) {
+    return all(tx.db, sql, params);
+  }
+  return queueDbOp(async () => {
+    const db = await getDb();
+    return all(db, sql, params);
+  });
 }
 
 export async function runInTransaction(work) {
-  const db = await getDb();
-
-  await run(db, 'BEGIN IMMEDIATE TRANSACTION');
-  try {
-    await work(db);
-    await run(db, 'COMMIT');
-  } catch (err) {
+  const existing = txStore.getStore();
+  if (existing && existing.db) {
+    existing.depth += 1;
     try {
-      await run(db, 'ROLLBACK');
-    } catch (rollbackErr) {
-      logError('SQLite rollback failed', rollbackErr);
+      return await work(existing.db);
+    } finally {
+      existing.depth -= 1;
     }
-    throw err;
   }
+
+  return queueDbOp(async () => {
+    const db = await getDb();
+    await run(db, 'BEGIN IMMEDIATE TRANSACTION');
+    return txStore.run({ db, depth: 1 }, async () => {
+      try {
+        const result = await work(db);
+        await run(db, 'COMMIT');
+        return result;
+      } catch (err) {
+        try {
+          await run(db, 'ROLLBACK');
+        } catch (rollbackErr) {
+          logError('SQLite rollback failed', rollbackErr);
+        }
+        throw err;
+      }
+    });
+  });
 }

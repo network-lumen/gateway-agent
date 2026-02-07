@@ -20,7 +20,6 @@ export async function sendWebhookEvent(type, data) {
       body: JSON.stringify(payload)
     });
   } catch (err) {
-    // Non bloquant: on log et on continue
     console.error('[webhook] failed to send event', type, err);
   }
 }
