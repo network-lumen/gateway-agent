@@ -8,7 +8,8 @@ import {
   countWalletPinsForCid,
   hasWalletRoot,
   getWalletsForRootCid,
-  removeWalletRoot
+  removeWalletRoot,
+  setWalletCidDisplayName
 } from '../lib/walletDb.js';
 import { sendWebhookEvent } from '../lib/webhook.js';
 import { sendPqJson } from '../lib/pqResponse.js';
@@ -105,6 +106,11 @@ export async function postUnpin(req, res) {
     // If this wallet never had a logical pin/root for this CID,
     // we treat the operation as idempotent at the API level and do not touch IPFS.
     if (!walletHasAnyRef) {
+      try {
+        await setWalletCidDisplayName(wallet, cid, null);
+      } catch (dbErr) {
+        console.error('[api:/unpin] wallet_cid_metadata delete failed', dbErr);
+      }
       return send(200, { ok: true, cid, wallet, changed: false });
     }
 
@@ -128,6 +134,12 @@ export async function postUnpin(req, res) {
 
       // Fire-and-forget webhook
       void sendWebhookEvent('unpin', { wallet, cid });
+
+      try {
+        await setWalletCidDisplayName(wallet, cid, null);
+      } catch (dbErr) {
+        console.error('[api:/unpin] wallet_cid_metadata delete failed', dbErr);
+      }
 
       return send(200, { ok: true, cid, wallet });
     }
@@ -160,6 +172,12 @@ export async function postUnpin(req, res) {
 
     // Fire-and-forget webhook
     void sendWebhookEvent('unpin', { wallet, cid });
+
+    try {
+      await setWalletCidDisplayName(wallet, cid, null);
+    } catch (dbErr) {
+      console.error('[api:/unpin] wallet_cid_metadata delete failed', dbErr);
+    }
 
     return send(200, { ok: true, cid, wallet });
   } catch (err) {

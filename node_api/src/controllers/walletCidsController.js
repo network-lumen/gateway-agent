@@ -24,15 +24,41 @@ export async function getWalletPinnedCids(req, res) {
 
     const hasMore = rows.length > PAGE_SIZE;
     const slice = hasMore ? rows.slice(0, PAGE_SIZE) : rows;
-    const cids = slice
-      .map((r) => String(r.cid || '').trim())
-      .filter((c) => !!c);
+
+    const items = [];
+    const names = {};
+    for (const row of slice) {
+      const cid = String(row?.cid || '').trim();
+      if (!cid) continue;
+
+      const createdAt =
+        typeof row?.created_at === 'number' && Number.isFinite(row.created_at)
+          ? row.created_at
+          : null;
+
+      const displayName =
+        typeof row?.display_name === 'string' && row.display_name.trim()
+          ? row.display_name.trim()
+          : null;
+
+      items.push({
+        cid,
+        created_at: createdAt,
+        display_name: displayName
+      });
+
+      if (displayName) names[cid] = displayName;
+    }
+
+    const cids = items.map((i) => i.cid);
 
     const body = {
       wallet,
       page,
       page_size: PAGE_SIZE,
       cids,
+      items,
+      names,
       has_more: hasMore
     };
 

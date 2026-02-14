@@ -6,7 +6,7 @@ import { kuboRequest } from '../lib/kuboClient.js';
 import { recordIngest } from '../lib/walletRegistry.js';
 import { sendWebhookEvent } from '../lib/webhook.js';
 import { ensureWalletPlanOk } from '../lib/walletPlan.js';
-import { addOrUpdateWalletRoots } from '../lib/walletDb.js';
+import { addOrUpdateWalletRoots, setWalletCidDisplayName } from '../lib/walletDb.js';
 import { enqueueIngestJob } from '../services/ingestQueue.js';
 import { CONFIG } from '../config.js';
 
@@ -66,6 +66,20 @@ export async function postIngestInit(req, res) {
       }
     }
 
+    const displayNameRaw =
+      req.body && typeof req.body.displayName === 'string'
+        ? req.body.displayName
+        : req.body && typeof req.body.display_name === 'string'
+          ? req.body.display_name
+          : req.body && typeof req.body.name === 'string'
+            ? req.body.name
+            : req.body && typeof req.body.fileName === 'string'
+              ? req.body.fileName
+              : req.body && typeof req.body.filename === 'string'
+                ? req.body.filename
+                : '';
+    const displayName = String(displayNameRaw || '').trim() || null;
+
     try {
       await ensureWalletPlanOk(wallet, null);
     } catch (planErr) {
@@ -86,6 +100,7 @@ export async function postIngestInit(req, res) {
       wallet,
       planId,
       estBytes,
+      displayName,
       createdAt: Date.now()
     });
 
@@ -119,6 +134,10 @@ export async function postIngestCar(req, res) {
     ingestTokens.delete(token);
 
     const wallet = String(entry.wallet || '').trim();
+    const displayNameFromToken =
+      typeof entry.displayName === 'string' && entry.displayName.trim()
+        ? entry.displayName.trim()
+        : null;
     const planIdFromToken =
       typeof entry.planId === 'string' && entry.planId.trim()
         ? entry.planId.trim()
@@ -249,6 +268,20 @@ export async function postIngestCar(req, res) {
         console.error('[api:/ingest/car] wallet_roots insert failed', {
           error: dbErr && dbErr.code ? String(dbErr.code) : 'db_error'
         });
+      }
+
+      if (displayNameFromToken) {
+        for (const rootCid of uniqueRoots) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            await setWalletCidDisplayName(wallet, rootCid, displayNameFromToken);
+          } catch (nameErr) {
+            // eslint-disable-next-line no-console
+            console.error('[api:/ingest/car] wallet_cid_metadata upsert failed', {
+              error: nameErr && nameErr.code ? String(nameErr.code) : 'db_error'
+            });
+          }
+        }
       }
 
       const meta = {

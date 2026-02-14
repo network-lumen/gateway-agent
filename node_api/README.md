@@ -24,6 +24,7 @@ The node API focuses on wallet semantics, quotas, and post‑quantum transport; 
 - **Control plane (PQ‑encrypted)** – all routes that depend on `authWallet` and touch wallet state are protected with Kyber768 (ML‑KEM) + AES‑256‑GCM:
   - `POST /wallet/usage`
   - `POST /wallet/cids`
+  - `POST /wallet/cid/rename`
   - `POST /pin`
   - `POST /unpin`
   - `POST /ispinned`
@@ -374,11 +375,34 @@ Response:
     "Qm...",
     "Qm..."
   ],
+  "items": [
+    { "cid": "Qm...", "created_at": 1768608900000, "display_name": "my-file.mp4" },
+    { "cid": "Qm...", "created_at": 1768608800000, "display_name": null }
+  ],
+  "names": {
+    "Qm...": "my-file.mp4"
+  },
   "has_more": true
 }
 ```
 
 Used by the electron client to inspect pinned CIDs without spamming `/ispinned` per entry.
+
+#### `POST /wallet/cid/rename`
+
+Sets (or clears) the per-wallet display name for a CID. Payload:
+
+```json
+{ "cid": "Qm...", "displayName": "movie.mp4" }
+```
+
+`displayName` may be sent as `display_name` or `name`. Sending an empty string clears the stored name.
+
+Response:
+
+```json
+{ "ok": true, "wallet": "lmn1...", "cid": "Qm...", "display_name": "movie.mp4" }
+```
 
 #### `POST /pin` / `POST /unpin` / `POST /ispinned`
 
@@ -402,6 +426,9 @@ The ingest flow is split in three:
    }
    ```
 
+   The request payload may include an optional `displayName` (or `display_name` / `name` / `filename` / `fileName`).
+   If present, it is saved as the per-wallet display name for each ingested root CID.
+
 3. `POST /ingest/car?token=<upload_token>&planId=basic` – streams the CAR body to Kubo via a background job with a random delay and records roots + approximate bytes in `wallet_roots`.
 
 The CAR request itself is not PQ‑encrypted; only the control‑plane steps (`/ingest/ready`, `/ingest/init`) are.
@@ -424,6 +451,17 @@ The node API maintains a small SQLite database for wallet‑scoped state:
   - `created_at` (timestamp ms)
   - `bytes_estimated` (rough byte estimate from ingest)
   - `status` (`active` / `removed`)
+
+- `wallet_pins` – mapping between wallets and pinned CIDs (explicit `/pin`):
+  - `wallet`
+  - `cid`
+  - `created_at` (timestamp ms)
+
+- `wallet_cid_metadata` – per-wallet metadata (display name):
+  - `wallet`
+  - `cid`
+  - `display_name`
+  - `created_at` / `updated_at` (timestamps ms)
 
 `NODE_API_WALLET_DB_PATH` controls where this file lives; in Docker it is `/data/node_api/wallets.sqlite` mapped to `/opt/lumen/gateway/node_api_data`.
 

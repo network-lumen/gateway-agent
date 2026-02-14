@@ -60,6 +60,20 @@ CREATE INDEX IF NOT EXISTS idx_wallet_pins_wallet
   ON wallet_pins(wallet);
 CREATE INDEX IF NOT EXISTS idx_wallet_pins_cid
   ON wallet_pins(cid);
+
+CREATE TABLE IF NOT EXISTS wallet_cid_metadata (
+  wallet TEXT NOT NULL,
+  cid TEXT NOT NULL,
+  display_name TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (wallet, cid)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wallet_cid_metadata_wallet
+  ON wallet_cid_metadata(wallet);
+CREATE INDEX IF NOT EXISTS idx_wallet_cid_metadata_cid
+  ON wallet_cid_metadata(cid);
 `
 });
 
@@ -92,6 +106,22 @@ const dbRun = WALLET_DB.dbRun;
 const dbGet = WALLET_DB.dbGet;
 const dbAll = WALLET_DB.dbAll;
 const runInTransaction = WALLET_DB.runInTransaction;
+
+function normalizeDisplayName(value) {
+  if (value == null) return null;
+  let name = String(value);
+  name = name.replace(/\u0000/g, '');
+  name = name.replace(/[\r\n\t]+/g, ' ');
+  name = name.trim();
+  if (!name) return null;
+
+  const MAX_LEN = 256;
+  if (name.length > MAX_LEN) {
+    name = Array.from(name).slice(0, MAX_LEN).join('');
+  }
+
+  return name || null;
+}
 
 export async function upsertWalletRecord({ wallet, planId }) {
   const normalizedPlanId =
@@ -298,7 +328,8 @@ export async function getWalletPinnedCidsPage(wallet, { limit, offset } = {}) {
 
   return dbAll(
     `
-    SELECT cid, created_at FROM (
+    SELECT t.cid, t.created_at, m.display_name
+    FROM (
       SELECT root_cid AS cid, created_at
       FROM wallet_roots
       WHERE wallet = ? AND status = 'active'
@@ -306,11 +337,13 @@ export async function getWalletPinnedCidsPage(wallet, { limit, offset } = {}) {
       SELECT cid AS cid, created_at
       FROM wallet_pins
       WHERE wallet = ?
-    )
-    ORDER BY created_at DESC, cid ASC
+    ) AS t
+    LEFT JOIN wallet_cid_metadata m
+      ON m.wallet = ? AND m.cid = t.cid
+    ORDER BY t.created_at DESC, t.cid ASC
     LIMIT ? OFFSET ?
   `,
-    [w, w, safeLimit, safeOffset]
+    [w, w, w, safeLimit, safeOffset]
   );
 }
 
@@ -453,4 +486,36 @@ export async function countWalletReplicationForCids(cidsInput, { sinceMs } = {})
   }
 
   return counts;
+}
+
+export async function setWalletCidDisplayName(wallet, cid, displayName) {
+  const w = String(wallet || '').trim();
+  const c = String(cid || '').trim();
+  if (!w || !c) return null;
+
+  const normalized = normalizeDisplayName(displayName);
+  if (!normalized) {
+    await dbRun(
+      `
+      DELETE FROM wallet_cid_metadata
+      WHERE wallet = ? AND cid = ?
+    `,
+      [w, c]
+    );
+    return null;
+  }
+
+  const now = Date.now();
+  await dbRun(
+    `
+    INSERT INTO wallet_cid_metadata (wallet, cid, display_name, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(wallet, cid) DO UPDATE SET
+      display_name = excluded.display_name,
+      updated_at = excluded.updated_at
+  `,
+    [w, c, normalized, now, now]
+  );
+
+  return normalized;
 }

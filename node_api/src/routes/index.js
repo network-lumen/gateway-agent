@@ -9,6 +9,7 @@ import { postPqView } from '../controllers/viewController.js';
 import { getMetrics } from '../controllers/adminController.js';
 import { getWalletUsage } from '../controllers/walletUsageController.js';
 import { getWalletPinnedCids } from '../controllers/walletCidsController.js';
+import { postWalletCidRename } from '../controllers/walletMetadataController.js';
 import { authWallet } from '../middleware/authWallet.js';
 import { postPqIpfs, postPqIpns } from '../controllers/ipfsProxyController.js';
 import { postRootsDomains } from '../controllers/internalCidController.js';
@@ -41,6 +42,7 @@ export function buildRouter() {
   router.post('/ispinned', authWallet, getIsPinned);
   router.post('/wallet/usage', authWallet, getWalletUsage);
   router.post('/wallet/cids', authWallet, getWalletPinnedCids);
+  router.post('/wallet/cid/rename', authWallet, postWalletCidRename);
 
   // Admin / internal
   router.get('/metrics', getMetrics);
