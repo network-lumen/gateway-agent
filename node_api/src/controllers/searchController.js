@@ -622,21 +622,31 @@ function normalizeCursorInput(rawCursor) {
   const id = String(cursor.id ?? '').trim();
 
   if (!Number.isFinite(score) || !id) return null;
-  return { score, id };
+
+  const rankAtRaw = cursor.rankAt ?? cursor.rank_at ?? null;
+  const rankAtNum = typeof rankAtRaw === 'number' ? rankAtRaw : Number(rankAtRaw);
+  const rankAt =
+    Number.isFinite(rankAtNum) && rankAtNum > 0 ? Math.floor(rankAtNum) : null;
+
+  return { score, id, rankAt };
 }
 
 function isAfterCursor({ score, id }, cursor) {
   if (!cursor) return true;
   const s = typeof score === 'number' && Number.isFinite(score) ? score : 0;
   const cScore = typeof cursor.score === 'number' && Number.isFinite(cursor.score) ? cursor.score : 0;
-  if (s < cScore) return true;
-  if (s > cScore) return false;
   const itemId = String(id || '');
   const cursorId = String(cursor.id || '');
+  // Cursor pagination assumes a stable ordering by (score DESC, unique_id DESC).
+  // If score drifts slightly between requests (e.g., freshness uses wall clock), never re-emit the
+  // cursor item even if its recomputed score would match the "after" predicate.
+  if (itemId && cursorId && itemId === cursorId) return false;
+  if (s < cScore) return true;
+  if (s > cScore) return false;
   return itemId < cursorId;
 }
 
-function paginateSortedItems(itemsInput, { limit, offset, cursor, getScore, getId } = {}) {
+function paginateSortedItems(itemsInput, { limit, offset, cursor, rankAt, getScore, getId } = {}) {
   const items = Array.isArray(itemsInput) ? itemsInput : [];
   const limRaw = Number(limit);
   const lim = Number.isFinite(limRaw) && limRaw > 0 ? Math.min(Math.floor(limRaw), 200) : 20;
@@ -661,10 +671,14 @@ function paginateSortedItems(itemsInput, { limit, offset, cursor, getScore, getI
   const hasMore = window.length > lim;
   const pageItems = hasMore ? window.slice(0, lim) : window;
   const last = pageItems.length ? pageItems[pageItems.length - 1] : null;
+  const rankAtRaw = rankAt != null ? rankAt : cur ? cur.rankAt : null;
+  const rankAtNum = typeof rankAtRaw === 'number' ? rankAtRaw : Number(rankAtRaw);
+  const nextRankAt = Number.isFinite(rankAtNum) && rankAtNum > 0 ? Math.floor(rankAtNum) : null;
   const nextCursor = last
     ? {
         score: getScore ? getScore(last) : 0,
-        id: String(getId ? getId(last) : '').trim()
+        id: String(getId ? getId(last) : '').trim(),
+        ...(nextRankAt ? { rankAt: nextRankAt } : {})
       }
     : null;
 
@@ -973,7 +987,9 @@ async function executePlanAgainstIndexerPaged(plan, queryTokens, opts = {}) {
   const pool = preFilter ? allHits.filter(preFilter) : allHits;
   if (!pool.length) return [];
 
-  const now = Date.now();
+  const nowRaw = opts && opts.nowMs != null ? opts.nowMs : null;
+  const nowNum = typeof nowRaw === 'number' ? nowRaw : Number(nowRaw);
+  const now = Number.isFinite(nowNum) && nowNum > 0 ? Math.floor(nowNum) : Date.now();
 
   const contentTokens = tokens
     .map((t) => String(t || '').trim().toLowerCase())
@@ -1470,6 +1486,10 @@ export async function getSearch(req, res) {
     const limitRaw = Number(req.query?.limit || 20);
     const offsetRaw = Number(req.query?.offset || 0);
     const cursor = normalizeCursorInput(req.query?.cursor);
+    const rankAt =
+      cursor && typeof cursor.rankAt === 'number' && Number.isFinite(cursor.rankAt) && cursor.rankAt > 0
+        ? cursor.rankAt
+        : Date.now();
     const facetRaw = String(req.query?.facet || '0');
 
     const limit = Math.max(
@@ -1668,6 +1688,7 @@ export async function getSearch(req, res) {
         const indexerOpts = {};
         if (preFilter) indexerOpts.preFilter = preFilter;
         if (cursor) indexerOpts.scanLimit = 200;
+        indexerOpts.nowMs = rankAt;
         hits = await executePlanAgainstIndexerPaged(
           plan,
           queryTokens,
@@ -2641,7 +2662,8 @@ export async function getSearch(req, res) {
             nextCursor = id
               ? {
                   score: typeof last.score === 'number' && Number.isFinite(last.score) ? last.score : 0,
-                  id
+                  id,
+                  ...(rankAt ? { rankAt } : {})
                 }
               : null;
           } else {
@@ -2672,7 +2694,8 @@ export async function getSearch(req, res) {
       nextCursor = id
         ? {
             score: typeof last.score === 'number' && Number.isFinite(last.score) ? last.score : 0,
-            id
+            id,
+            ...(rankAt ? { rankAt } : {})
           }
         : null;
       hasMore = false;
@@ -2690,6 +2713,7 @@ export async function getSearch(req, res) {
         limit,
         offset,
         cursor,
+        rankAt,
         getScore: (h) =>
           h && typeof h._score === 'number' && Number.isFinite(h._score) ? h._score : 0,
         getId: (h) => (h && typeof h.cid === 'string' ? h.cid : '')
