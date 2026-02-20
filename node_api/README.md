@@ -302,7 +302,7 @@ sudo ufw enable
 
   ```json
   {
-    "version": "0.1.1",
+    "version": "0.1.2",
     "region": "eu-west",
     "public": "http://<PUBLIC_IP>:8787",
     "ipfs": { "online": true },
