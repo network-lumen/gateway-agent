@@ -42,8 +42,13 @@ const PUBLIC_ENDPOINT = process.env.PUBLIC_ENDPOINT || (
     );
 
 // In Docker, we talk to the Kubo and indexer services by their compose service names.
-const KUBO_API_BASE = 'http://ipfs:5001'.replace(/\/+$/, '');
-const KUBO_GATEWAY_BASE = 'http://ipfs:8080'.replace(/\/+$/, '');
+// Outside Docker (systemd, bare-metal), override these with env vars.
+const KUBO_API_BASE = (process.env.KUBO_API_BASE || 'http://ipfs:5001').replace(/\/+$/, '');
+const KUBO_GATEWAY_BASE = (
+  process.env.IPFS_GATEWAY_BASE ||
+  process.env.KUBO_GATEWAY_BASE ||
+  'http://ipfs:8080'
+).replace(/\/+$/, '');
 const INDEXER_BASE =
   (process.env.INDEXER_BASE_URL || 'http://indexer:8790').replace(
     /\/+$/,

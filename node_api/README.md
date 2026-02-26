@@ -182,6 +182,8 @@ Key environment variables:
 - `CHAIN_REST_BASE_URL` (recommended in prod): base URL of the Lumen chain REST API, used to fetch plans from the gateways module. If omitted, the service falls back to the first `chainSeeds[].rest` entry from `config.json` (and finally to `http://host.docker.internal:1317`).
 - `NODE_API_WALLET_DB_PATH`: SQLite path for wallet state (e.g. `/data/node_api/wallets.sqlite` in Docker).
 - `LUMEN_GATEWAY_KYBER_KEY_PATH` (required): path to the Kyber key file (`kyber.json` inside the container).
+- `KUBO_API_BASE` (default `http://ipfs:5001`): base URL of the Kubo API. In Docker this points to the `ipfs` compose service; outside Docker set it to your Kubo host (for example `http://127.0.0.1:5001`).
+- `IPFS_GATEWAY_BASE` (default `http://ipfs:8080`): base URL of the Kubo HTTP gateway used for `/pq/ipfs` and `/pq/ipns`. `KUBO_GATEWAY_BASE` is accepted as an alias.
 - `KUBO_REQUEST_TIMEOUT_MS` (default `15000`): timeout (ms) for node_api → Kubo requests.
 - `KUBO_IMPORT_TIMEOUT_MS` (default `300000`): timeout (ms) for CAR ingest (`/api/v0/dag/import`).
 - `INGEST_TMP_DIR` (optional): directory used to spool CAR uploads before background ingest (defaults next to `NODE_API_WALLET_DB_PATH`).
