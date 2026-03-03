@@ -3,6 +3,7 @@ import {
   parseSqliteBusyTimeoutMs,
   createSqliteStore
 } from './sqliteUtils.js';
+import { debugLog } from './logger.js';
 
 const DEFAULT_DB_PATH = '/data/node_api/wallets.sqlite';
 
@@ -15,6 +16,7 @@ const SQLITE_BUSY_TIMEOUT_MS = parseSqliteBusyTimeoutMs(
   'NODE_API_SQLITE_BUSY_TIMEOUT_MS',
   5000
 );
+debugLog('db', 'walletDb config', { dbPath: DB_PATH, busyTimeoutMs: SQLITE_BUSY_TIMEOUT_MS });
 const WALLET_DB = createSqliteStore({
   dbPath: DB_PATH,
   busyTimeoutMs: SQLITE_BUSY_TIMEOUT_MS,
@@ -189,6 +191,13 @@ export async function addOrUpdateWalletRoots({
   bytesEstimated
 }) {
   if (!Array.isArray(roots) || roots.length === 0) return;
+  debugLog('db', 'wallet_roots upsert', {
+    wallet: String(wallet || '').trim(),
+    roots: roots.length,
+    bytesEstimated:
+      typeof bytesEstimated === 'number' && Number.isFinite(bytesEstimated) ? bytesEstimated : null,
+    sample: roots.slice(0, 3)
+  });
   const now = Date.now();
   const est =
     typeof bytesEstimated === 'number' && Number.isFinite(bytesEstimated)
@@ -198,13 +207,12 @@ export async function addOrUpdateWalletRoots({
   const perRootBytes =
     est && est > 0 ? Math.floor(est / roots.length) : null;
 
-  await runInTransaction(async (db) => {
+  await runInTransaction(async () => {
     for (const rootCid of roots) {
       if (!rootCid) continue;
       // One insert/update per root; all succeed or all rollback.
       // eslint-disable-next-line no-await-in-loop
-      await run(
-        db,
+      await dbRun(
         `
         INSERT INTO wallet_roots (
           wallet, root_cid, created_at, bytes_estimated, status

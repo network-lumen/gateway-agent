@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import sqlite3 from 'sqlite3';
+import { debugLog, formatError } from './logger.js';
 
 export function parseSqliteBusyTimeoutMs(envVarName, defaultMs = 5000) {
   const raw = String(process.env[envVarName] || '').trim();
@@ -13,6 +14,7 @@ export function parseSqliteBusyTimeoutMs(envVarName, defaultMs = 5000) {
 
 export function ensureParentDir(filePath, logLabel = 'sqlite') {
   const dir = path.dirname(String(filePath || '').trim() || '.');
+  debugLog('db', 'ensureParentDir', { logLabel, dir });
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch (err) {
@@ -44,13 +46,18 @@ export function openSqliteDb(dbPath, { busyTimeoutMs } = {}) {
       : 5000;
 
   return new Promise((resolve, reject) => {
+    debugLog('db', 'open', { dbPath: String(dbPath), busyTimeoutMs: timeout });
     const db = new sqlite3.Database(dbPath, (err) => {
-      if (err) return reject(err);
+      if (err) {
+        debugLog('db', 'open failed', { dbPath: String(dbPath), ...formatError(err) });
+        return reject(err);
+      }
       try {
         db.configure('busyTimeout', timeout);
       } catch {
         // ignore
       }
+      debugLog('db', 'open ok', { dbPath: String(dbPath) });
       resolve(db);
     });
 
@@ -128,9 +135,11 @@ export function createSqliteStore({
     if (schemaEnsured) return;
     const sql = getSchemaSql();
     if (sql) {
+      debugLog('db', 'schema apply', { logLabel, bytes: sql.length });
       await sqliteExec(db, sql);
     }
     schemaEnsured = true;
+    debugLog('db', 'schema ok', { logLabel });
   }
 
   async function initDb() {
@@ -140,11 +149,14 @@ export function createSqliteStore({
     ensureParentDir(resolvedPath, logLabel);
 
     initPromise = (async () => {
+      debugLog('db', 'init', { logLabel, dbPath: resolvedPath, busyTimeoutMs });
       const db = await openSqliteDb(resolvedPath, { busyTimeoutMs });
       await ensureSchema(db);
       dbInstance = db;
+      debugLog('db', 'ready', { logLabel, dbPath: resolvedPath });
       return dbInstance;
     })().catch((err) => {
+      debugLog('db', 'init failed', { logLabel, dbPath: resolvedPath, ...formatError(err) });
       initPromise = null;
       throw err;
     });
@@ -214,11 +226,13 @@ export function createSqliteStore({
 
     return queueDbOp(async () => {
       const db = await getDb();
+      debugLog('db', 'tx begin', { logLabel });
       await sqliteRun(db, 'BEGIN IMMEDIATE TRANSACTION');
       return txStore.run({ db, depth: 1 }, async () => {
         try {
           const result = await work(db);
           await sqliteRun(db, 'COMMIT');
+          debugLog('db', 'tx commit', { logLabel });
           return result;
         } catch (err) {
           try {
@@ -226,6 +240,7 @@ export function createSqliteStore({
           } catch {
             // ignore rollback errors
           }
+          debugLog('db', 'tx rollback', { logLabel, ...formatError(err) });
           throw err;
         }
       });

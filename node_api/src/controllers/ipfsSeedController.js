@@ -1,4 +1,5 @@
 import { CONFIG } from '../config.js';
+import { debugLog, formatError } from '../lib/logger.js';
 
 function withTimeout(timeoutMs) {
   const controller = new AbortController();
@@ -94,11 +95,23 @@ async function kuboPostJson(pathname, { timeoutMs = 1200, searchParams = {} } = 
   }
 
   const { signal, clear } = withTimeout(timeoutMs);
+  debugLog('kubo', 'request', {
+    method: 'POST',
+    pathname: String(pathname),
+    timeoutMs
+  });
   try {
     const resp = await fetch(url.toString(), { method: 'POST', signal });
     const json = await readJsonBestEffort(resp);
+    debugLog('kubo', 'response', {
+      method: 'POST',
+      pathname: String(pathname),
+      status: resp.status,
+      ok: resp.ok
+    });
     return { ok: resp.ok, status: resp.status, json };
   } catch (err) {
+    debugLog('kubo', 'error', { method: 'POST', pathname: String(pathname), ...formatError(err) });
     return { ok: false, status: 0, json: null, error: String(err?.message || err) };
   } finally {
     clear();
@@ -110,11 +123,13 @@ export async function getIpfsSeed(_req, res) {
 
   const idRes = await kuboPostJson('/api/v0/id', { timeoutMs, searchParams: { enc: 'json' } });
   if (!idRes.ok || !idRes.json) {
+    debugLog('ipfs', 'seed unavailable', { stage: 'id', status: idRes.status, error: idRes.error });
     return res.status(503).json({ error: 'ipfs_unavailable' });
   }
 
   const peerId = String(idRes.json.ID || idRes.json.id || '').trim();
   if (!peerId) {
+    debugLog('ipfs', 'seed unavailable', { stage: 'peerId_missing' });
     return res.status(503).json({ error: 'ipfs_unavailable' });
   }
 
@@ -137,9 +152,11 @@ export async function getIpfsSeed(_req, res) {
   const multiaddrs = uniq.filter(isUsableMultiaddr);
 
   if (!multiaddrs.length) {
+    debugLog('ipfs', 'seed unavailable', { stage: 'no_usable_multiaddrs', total: uniq.length });
     return res.status(503).json({ error: 'no_usable_multiaddrs' });
   }
 
+  debugLog('ipfs', 'seed ok', { peerId, multiaddrs: multiaddrs.length, sample: multiaddrs.slice(0, 3) });
   return res.status(200).json({ peerId, multiaddrs });
 }
 

@@ -1,4 +1,5 @@
 import { CONFIG } from '../config.js';
+import { debugLog, formatError } from './logger.js';
 
 function fetchWithTimeout(url, init, timeoutMs) {
   const controller = new AbortController();
@@ -24,6 +25,27 @@ export async function kuboRequest(pathname, init = {}) {
   // eslint-disable-next-line no-unused-vars
   const { timeoutMs: _timeoutMs, ...fetchInit } = init;
 
-  const resp = await fetchWithTimeout(url, { method: 'POST', ...fetchInit }, timeoutMs);
-  return resp;
+  const method = String(fetchInit.method || 'POST').toUpperCase();
+
+  const start = Date.now();
+  debugLog('kubo', 'request', { method, pathname: String(pathname), timeoutMs });
+  try {
+    const resp = await fetchWithTimeout(url, { method: 'POST', ...fetchInit }, timeoutMs);
+    debugLog('kubo', 'response', {
+      method,
+      pathname: String(pathname),
+      status: resp.status,
+      ok: resp.ok,
+      ms: Date.now() - start
+    });
+    return resp;
+  } catch (err) {
+    debugLog('kubo', 'error', {
+      method,
+      pathname: String(pathname),
+      ms: Date.now() - start,
+      ...formatError(err)
+    });
+    throw err;
+  }
 }

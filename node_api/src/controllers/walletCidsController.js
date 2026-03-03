@@ -1,5 +1,6 @@
 import { getWalletPinnedCidsPage } from '../lib/walletDb.js';
 import { sendPqJson } from '../lib/pqResponse.js';
+import { debugLog } from '../lib/logger.js';
 
 export async function getWalletPinnedCids(req, res) {
   try {
@@ -51,6 +52,14 @@ export async function getWalletPinnedCids(req, res) {
     }
 
     const cids = items.map((i) => i.cid);
+
+    debugLog('wallet', 'cids', {
+      wallet,
+      page,
+      returned: items.length,
+      hasMore,
+      sample: cids.slice(0, 3)
+    });
 
     const body = {
       wallet,

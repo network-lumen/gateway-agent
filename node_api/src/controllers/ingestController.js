@@ -9,6 +9,7 @@ import { ensureWalletPlanOk } from '../lib/walletPlan.js';
 import { addOrUpdateWalletRoots, setWalletCidDisplayName } from '../lib/walletDb.js';
 import { enqueueIngestJob } from '../services/ingestQueue.js';
 import { CONFIG } from '../config.js';
+import { debugLog, formatError } from '../lib/logger.js';
 
 const TOKEN_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const ingestTokens = new Map();
@@ -80,6 +81,13 @@ export async function postIngestInit(req, res) {
                 : '';
     const displayName = String(displayNameRaw || '').trim() || null;
 
+    debugLog('ingest', 'init', {
+      wallet,
+      planId,
+      estBytes,
+      displayNameLen: displayName ? displayName.length : 0
+    });
+
     try {
       await ensureWalletPlanOk(wallet, null);
     } catch (planErr) {
@@ -123,12 +131,14 @@ export async function postIngestCar(req, res) {
   try {
     const token = String(req.query.token || '').trim();
     if (!token) {
+      debugLog('ingest', 'upload reject', { reason: 'upload_token_required' });
       return res.status(400).json({ error: 'upload_token_required' });
     }
 
     cleanupTokens();
     const entry = ingestTokens.get(token);
     if (!entry || !entry.wallet) {
+      debugLog('ingest', 'upload reject', { reason: 'upload_token_invalid' });
       return res.status(400).json({ error: 'upload_token_invalid' });
     }
     ingestTokens.delete(token);
@@ -145,6 +155,15 @@ export async function postIngestCar(req, res) {
 
     const planIdQuery = String(req.query.planId || '').trim();
     const planId = planIdFromToken || planIdQuery || null;
+
+    debugLog('ingest', 'upload start', {
+      wallet,
+      planId,
+      displayNameLen: displayNameFromToken ? displayNameFromToken.length : 0,
+      ingestTmpDir: INGEST_TMP_DIR,
+      maxBytes: MAX_CAR_BYTES,
+      contentType: req.header('Content-Type') || null
+    });
 
     // Plan validation / cache: requires on-chain gateways module to be reachable
     try {
@@ -170,6 +189,7 @@ export async function postIngestCar(req, res) {
       fs.mkdirSync(INGEST_TMP_DIR, { recursive: true });
       const name = `upload-${Date.now()}-${crypto.randomBytes(8).toString('hex')}.car`;
       tmpFile = path.join(INGEST_TMP_DIR, name);
+      debugLog('ingest', 'tmpfile', { tmpFile });
     } catch (mkErr) {
       // eslint-disable-next-line no-console
       console.error('[api:/ingest/car] failed to create tmp dir', {
@@ -203,14 +223,18 @@ export async function postIngestCar(req, res) {
 
     if (tooLarge) {
       try { await fs.promises.unlink(tmpFile); } catch {}
+      debugLog('ingest', 'upload too large', { uploadedBytes, maxBytes: MAX_CAR_BYTES });
       return res.status(413).json({
         error: 'car_too_large',
         max_bytes: MAX_CAR_BYTES
       });
     }
 
+    debugLog('ingest', 'upload received', { uploadedBytes, tmpFile });
+
     const jobId = enqueueIngestJob(async () => {
       try {
+      debugLog('ingest', 'job start', { wallet, planId, uploadedBytes, tmpFile });
       const boundary = `----lumenFormBoundary${Math.random()
         .toString(16)
         .slice(2)}`;
@@ -242,6 +266,10 @@ export async function postIngestCar(req, res) {
 
       const text = await resp.text();
       if (!resp.ok) {
+        console.error('[api:/ingest/car] kubo dag/import failed', {
+          status: resp.status,
+          body: String(text || '').slice(0, 240)
+        });
         return;
       }
 
@@ -255,6 +283,19 @@ export async function postIngestCar(req, res) {
       }
       const uniqueRoots = Array.from(new Set(roots));
 
+      debugLog('ingest', 'kubo roots', {
+        roots: roots.length,
+        uniqueRoots: uniqueRoots.length,
+        sample: uniqueRoots.slice(0, 3)
+      });
+
+      if (uniqueRoots.length === 0) {
+        console.error('[api:/ingest/car] kubo dag/import returned no roots', {
+          body: String(text || '').slice(0, 240)
+        });
+        return;
+      }
+
       recordIngest(wallet, uploadedBytes);
 
       try {
@@ -266,8 +307,10 @@ export async function postIngestCar(req, res) {
       } catch (dbErr) {
         // eslint-disable-next-line no-console
         console.error('[api:/ingest/car] wallet_roots insert failed', {
-          error: dbErr && dbErr.code ? String(dbErr.code) : 'db_error'
+          code: dbErr && dbErr.code ? String(dbErr.code) : null,
+          message: dbErr && dbErr.message ? String(dbErr.message) : String(dbErr || 'db_error')
         });
+        debugLog('db', 'wallet_roots insert failed', formatError(dbErr));
       }
 
       if (displayNameFromToken) {
@@ -278,8 +321,11 @@ export async function postIngestCar(req, res) {
           } catch (nameErr) {
             // eslint-disable-next-line no-console
             console.error('[api:/ingest/car] wallet_cid_metadata upsert failed', {
-              error: nameErr && nameErr.code ? String(nameErr.code) : 'db_error'
+              code: nameErr && nameErr.code ? String(nameErr.code) : null,
+              message:
+                nameErr && nameErr.message ? String(nameErr.message) : String(nameErr || 'db_error')
             });
+            debugLog('db', 'wallet_cid_metadata upsert failed', formatError(nameErr));
           }
         }
       }
@@ -298,6 +344,8 @@ export async function postIngestCar(req, res) {
         try { await fs.promises.unlink(tmpFile); } catch {}
       }
     }, { bytes: uploadedBytes });
+
+    debugLog('ingest', 'job enqueued', { wallet, planId, uploadedBytes, jobId });
 
     res.json({
       ok: true,

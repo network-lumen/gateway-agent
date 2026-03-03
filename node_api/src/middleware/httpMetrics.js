@@ -1,5 +1,6 @@
 import process from 'node:process';
 import { recordHttpRequest } from '../services/httpMetrics.js';
+import { debugLog } from '../lib/logger.js';
 
 export function httpMetricsMiddleware(req, res, next) {
   const start = process.hrtime.bigint();
@@ -13,6 +14,12 @@ export function httpMetricsMiddleware(req, res, next) {
         path: req.path || req.originalUrl || '/',
         statusCode: res.statusCode || 0,
         durationMs
+      });
+      debugLog('http', 'request', {
+        method: req.method || 'GET',
+        path: req.path || req.originalUrl || '/',
+        status: res.statusCode || 0,
+        ms: Math.round(durationMs)
       });
     } catch {
       // Metrics must never break the request flow

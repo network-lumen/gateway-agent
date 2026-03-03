@@ -187,6 +187,7 @@ Key environment variables:
 - `KUBO_REQUEST_TIMEOUT_MS` (default `15000`): timeout (ms) for node_api → Kubo requests.
 - `KUBO_IMPORT_TIMEOUT_MS` (default `300000`): timeout (ms) for CAR ingest (`/api/v0/dag/import`).
 - `INGEST_TMP_DIR` (optional): directory used to spool CAR uploads before background ingest (defaults next to `NODE_API_WALLET_DB_PATH`).
+- `NODE_API_DEBUG` (optional): enable debug logs. Use `1` / `true` to enable all, or a comma-separated list of categories like `init,http,kubo,db,ingest,wallet,ipfs,stack`.
 
 Other optional fields (`CONFIG.GATEWAY.pricing`, `CONFIG.GATEWAY.webhook`, `CONFIG.GATEWAY.operator`, `CONFIG.GATEWAY.chainSeeds`) drive pricing and webhook logic but are not required for a minimal deployment.
 
@@ -304,7 +305,7 @@ sudo ufw enable
 
   ```json
   {
-    "version": "0.1.2",
+    "version": "0.1.3",
     "region": "eu-west",
     "public": "http://<PUBLIC_IP>:8787",
     "ipfs": { "online": true },
