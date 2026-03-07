@@ -646,43 +646,87 @@ function isAfterCursor({ score, id }, cursor) {
   return itemId < cursorId;
 }
 
+function normalizeCursorRankAt(rankAt, fallback = null) {
+  const raw = rankAt != null ? rankAt : fallback;
+  const num = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isFinite(num) && num > 0 ? Math.floor(num) : null;
+}
+
+function buildCursorValue(score, id, rankAt) {
+  const cleanId = String(id || '').trim();
+  const cleanScore = typeof score === 'number' && Number.isFinite(score) ? score : 0;
+  if (!cleanId) return null;
+  const nextRankAt = normalizeCursorRankAt(rankAt);
+  return nextRankAt ? { score: cleanScore, id: cleanId, rankAt: nextRankAt } : { score: cleanScore, id: cleanId };
+}
+
+function buildItemCursor(item, { rankAt, getScore, getId } = {}) {
+  if (!item) return null;
+  const id = String(getId ? getId(item) : '').trim();
+  if (!id) return null;
+  const score = getScore ? getScore(item) : 0;
+  return buildCursorValue(score, id, rankAt);
+}
+
+function pageStartIndexForCursor(items, cursor, { getScore, getId, offset } = {}) {
+  const offRaw = Number(offset);
+  const off = Number.isFinite(offRaw) && offRaw > 0 ? Math.floor(offRaw) : 0;
+  const cur = normalizeCursorInput(cursor);
+  if (!cur) return Math.min(off, items.length);
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if (
+      isAfterCursor(
+        {
+          score: getScore ? getScore(item) : 0,
+          id: getId ? getId(item) : ''
+        },
+        cur
+      )
+    ) {
+      return i;
+    }
+  }
+  return items.length;
+}
+
 function paginateSortedItems(itemsInput, { limit, offset, cursor, rankAt, getScore, getId } = {}) {
   const items = Array.isArray(itemsInput) ? itemsInput : [];
   const limRaw = Number(limit);
   const lim = Number.isFinite(limRaw) && limRaw > 0 ? Math.min(Math.floor(limRaw), 200) : 20;
-  const offRaw = Number(offset);
-  const off = Number.isFinite(offRaw) && offRaw > 0 ? Math.floor(offRaw) : 0;
-
   const cur = normalizeCursorInput(cursor);
-  const startItems = cur
-    ? items.filter((it) =>
-        isAfterCursor(
-          {
-            score: getScore ? getScore(it) : 0,
-            id: getId ? getId(it) : ''
-          },
-          cur
-        )
-      )
-    : items;
+  const nextRankAt = normalizeCursorRankAt(rankAt, cur ? cur.rankAt : null);
+  const start = pageStartIndexForCursor(items, cur, { getScore, getId, offset });
+  const pageItems = items.slice(start, start + lim);
+  const hasMore = start + pageItems.length < items.length;
+  const hasPrev = start > 0;
+  const prevPageStart = hasPrev ? Math.max(0, start - lim) : 0;
+  const pageCursor =
+    start > 0
+      ? buildItemCursor(items[start - 1], {
+          rankAt: nextRankAt,
+          getScore,
+          getId
+        })
+      : null;
+  const prevCursor =
+    hasPrev && prevPageStart > 0
+      ? buildItemCursor(items[prevPageStart - 1], {
+          rankAt: nextRankAt,
+          getScore,
+          getId
+        })
+      : null;
+  const nextCursor =
+    hasMore && pageItems.length
+      ? buildItemCursor(pageItems[pageItems.length - 1], {
+          rankAt: nextRankAt,
+          getScore,
+          getId
+        })
+      : null;
 
-  const start = cur ? 0 : off;
-  const window = startItems.slice(start, start + lim + 1);
-  const hasMore = window.length > lim;
-  const pageItems = hasMore ? window.slice(0, lim) : window;
-  const last = pageItems.length ? pageItems[pageItems.length - 1] : null;
-  const rankAtRaw = rankAt != null ? rankAt : cur ? cur.rankAt : null;
-  const rankAtNum = typeof rankAtRaw === 'number' ? rankAtRaw : Number(rankAtRaw);
-  const nextRankAt = Number.isFinite(rankAtNum) && rankAtNum > 0 ? Math.floor(rankAtNum) : null;
-  const nextCursor = last
-    ? {
-        score: getScore ? getScore(last) : 0,
-        id: String(getId ? getId(last) : '').trim(),
-        ...(nextRankAt ? { rankAt: nextRankAt } : {})
-      }
-    : null;
-
-  return { items: pageItems, hasMore, nextCursor };
+  return { items: pageItems, hasMore, hasPrev, pageCursor, prevCursor, nextCursor };
 }
 
 // Filter out HTML-structural tokens that are common in raw markup and not useful as "site tags".
@@ -1486,9 +1530,13 @@ export async function getSearch(req, res) {
     const limitRaw = Number(req.query?.limit || 20);
     const offsetRaw = Number(req.query?.offset || 0);
     const cursor = normalizeCursorInput(req.query?.cursor);
+    const rankAtParamRaw = req.query?.rankAt ?? req.query?.rank_at ?? null;
+    const rankAtParam = typeof rankAtParamRaw === 'number' ? rankAtParamRaw : Number(rankAtParamRaw);
     const rankAt =
       cursor && typeof cursor.rankAt === 'number' && Number.isFinite(cursor.rankAt) && cursor.rankAt > 0
         ? cursor.rankAt
+        : Number.isFinite(rankAtParam) && rankAtParam > 0
+          ? Math.floor(rankAtParam)
         : Date.now();
     const facetRaw = String(req.query?.facet || '0');
 
@@ -1508,6 +1556,9 @@ export async function getSearch(req, res) {
     let ui = null;
     let siteResults = null;
     let directCidLookup = false;
+    let pageCursor = null;
+    let prevCursor = null;
+    let hasPrev = false;
     let nextCursor = null;
     let hasMore = false;
 
@@ -2524,20 +2575,25 @@ export async function getSearch(req, res) {
             return aId < bId ? 1 : -1;
           });
 
-          // FINAL FILTER: only return HTML/HTM entrypoints.
-          // - For file CIDs: require ext/path to be .html/.htm.
-          // - For directory CIDs: require a discovered `entry_path` to a .html/.htm file.
-          const needed = cursor ? limit + 1 : offset + limit + 1;
-          const filteredSites = [];
+          const siteRankAt = normalizeCursorRankAt(rankAt, cursor ? cursor.rankAt : null);
+          const eligibleSiteCache = new Map();
+          const buildSiteCursor = (site) =>
+            buildCursorValue(
+              typeof site?.score === 'number' && Number.isFinite(site.score) ? site.score : 0,
+              siteCursorId(site),
+              siteRankAt
+            );
 
-          for (const s of sorted) {
-            if (!s) continue;
-            const id = siteCursorId(s);
-            if (!id) continue;
-            const sScore = typeof s.score === 'number' && Number.isFinite(s.score) ? s.score : 0;
-            if (cursor && !isAfterCursor({ score: sScore, id }, cursor)) continue;
+          const materializeEligibleSite = async (s) => {
+            const cacheKey = siteCursorId(s);
+            if (!cacheKey) return null;
+            if (eligibleSiteCache.has(cacheKey)) return eligibleSiteCache.get(cacheKey);
+
             const entryCid = String(s.entry_cid || s.cid || '').trim();
-            if (!entryCid) continue;
+            if (!entryCid) {
+              eligibleSiteCache.set(cacheKey, null);
+              return null;
+            }
 
             let entryPath = normalizeEntryPath(s.entry_path);
             if (entryPath && !isHtmlPath(entryPath)) entryPath = null;
@@ -2576,6 +2632,7 @@ export async function getSearch(req, res) {
               }
             }
 
+            let resolved = null;
             if (looksDirectory) {
               if (!entryPath) {
                 const cachedSiteEntry = entryInfo && entryInfo.siteEntryPath ? entryInfo.siteEntryPath : null;
@@ -2587,7 +2644,10 @@ export async function getSearch(req, res) {
                 // eslint-disable-next-line no-await-in-loop
                 entryPath = await findHtmlEntryPathForDirectory(entryCid);
               }
-              if (!entryPath || !isHtmlPath(entryPath)) continue;
+              if (!entryPath || !isHtmlPath(entryPath)) {
+                eligibleSiteCache.set(cacheKey, null);
+                return null;
+              }
 
               // Exclude Kubo "directory listing" HTML from Sites results.
               const entryPathNorm = normalizeEntryPath(entryPath);
@@ -2607,15 +2667,16 @@ export async function getSearch(req, res) {
                     looksLikeIpfsDirectoryListingTitleOrPath(leafInfo.title) ||
                     looksLikeDirectoryListingTitle(leafInfo.title))
                 ) {
-                  continue;
+                  eligibleSiteCache.set(cacheKey, null);
+                  return null;
                 }
               }
 
-              filteredSites.push({
+              resolved = {
                 ...s,
                 entry_cid: entryCid,
                 entry_path: entryPath
-              });
+              };
             } else {
               const infoPath = entryInfo && entryInfo.path ? entryInfo.path : null;
               const titleForHeuristics =
@@ -2630,44 +2691,86 @@ export async function getSearch(req, res) {
                 looksLikeIpfsDirectoryListingTitleOrPath(titleForHeuristics) ||
                 (!infoPath && looksLikeDirectoryListingTitle(titleForHeuristics))
               ) {
-                continue;
+                eligibleSiteCache.set(cacheKey, null);
+                return null;
               }
               const isHtmlFile =
                 (infoPath && isHtmlPath(infoPath)) ||
                 (entryInfo && (entryInfo.ext === 'html' || entryInfo.ext === 'htm')) ||
                 isHtmlMime(entryInfo?.mime) ||
                 !entryInfo.ok;
-              if (!isHtmlFile) continue;
-              filteredSites.push({
+              if (!isHtmlFile) {
+                eligibleSiteCache.set(cacheKey, null);
+                return null;
+              }
+
+              resolved = {
                 ...s,
                 entry_cid: entryCid,
                 entry_path: null
-              });
+              };
             }
 
-            if (filteredSites.length >= needed) break;
-          }
+            eligibleSiteCache.set(cacheKey, resolved);
+            return resolved;
+          };
 
+          // FINAL FILTER: only return HTML/HTM entrypoints.
+          // - For file CIDs: require ext/path to be .html/.htm.
+          // - For directory CIDs: require a discovered `entry_path` to a .html/.htm file.
           if (cursor) {
-            siteResults = filteredSites.slice(0, limit);
-            hasMore = filteredSites.length > limit;
-          } else {
-            siteResults = filteredSites.slice(offset, offset + limit);
-            hasMore = filteredSites.length > offset + limit;
-          }
+            const startIndex = pageStartIndexForCursor(sorted, cursor, {
+              getScore: (site) =>
+                site && typeof site.score === 'number' && Number.isFinite(site.score) ? site.score : 0,
+              getId: siteCursorId
+            });
 
-          if (Array.isArray(siteResults) && siteResults.length > 0) {
-            const last = siteResults[siteResults.length - 1];
-            const id = siteCursorId(last);
-            nextCursor = id
-              ? {
-                  score: typeof last.score === 'number' && Number.isFinite(last.score) ? last.score : 0,
-                  id,
-                  ...(rankAt ? { rankAt } : {})
-                }
-              : null;
+            const currentSites = [];
+            for (let i = startIndex; i < sorted.length && currentSites.length < limit + 1; i += 1) {
+              // eslint-disable-next-line no-await-in-loop
+              const site = await materializeEligibleSite(sorted[i]);
+              if (site) currentSites.push(site);
+            }
+
+            const previousSites = [];
+            for (let i = startIndex - 1; i >= 0 && previousSites.length < limit + 1; i -= 1) {
+              // eslint-disable-next-line no-await-in-loop
+              const site = await materializeEligibleSite(sorted[i]);
+              if (site) previousSites.push(site);
+            }
+
+            siteResults = currentSites.slice(0, limit);
+            hasMore = currentSites.length > limit;
+            hasPrev = previousSites.length > 0;
+            pageCursor = normalizeCursorInput(cursor);
+            prevCursor = hasPrev && previousSites.length > limit ? buildSiteCursor(previousSites[limit]) : null;
+            nextCursor = hasMore && siteResults.length ? buildSiteCursor(siteResults[siteResults.length - 1]) : null;
           } else {
-            nextCursor = null;
+            const needed = offset + limit + 1;
+            const filteredSites = [];
+
+            for (const s of sorted) {
+              // eslint-disable-next-line no-await-in-loop
+              const site = await materializeEligibleSite(s);
+              if (!site) continue;
+              filteredSites.push(site);
+              if (filteredSites.length >= needed) break;
+            }
+
+            const paged = paginateSortedItems(filteredSites, {
+              limit,
+              offset,
+              rankAt: siteRankAt,
+              getScore: (site) =>
+                site && typeof site.score === 'number' && Number.isFinite(site.score) ? site.score : 0,
+              getId: siteCursorId
+            });
+            siteResults = paged.items;
+            hasMore = paged.hasMore;
+            hasPrev = paged.hasPrev;
+            pageCursor = paged.pageCursor;
+            prevCursor = paged.prevCursor;
+            nextCursor = paged.nextCursor;
           }
 
           if ((!siteResults || siteResults.length === 0) && !ui && !cursor) {
@@ -2685,20 +2788,6 @@ export async function getSearch(req, res) {
           // ignore
         }
       }
-    }
-
-    if (isSiteSearch && Array.isArray(siteResults) && siteResults.length > 0 && !nextCursor) {
-      const last = siteResults[siteResults.length - 1];
-      const domain = String(last?.domain || '').trim();
-      const id = domain ? domain.toLowerCase() : String(last?.cid || '').trim();
-      nextCursor = id
-        ? {
-            score: typeof last.score === 'number' && Number.isFinite(last.score) ? last.score : 0,
-            id,
-            ...(rankAt ? { rankAt } : {})
-          }
-        : null;
-      hasMore = false;
     }
 
     if (strictType && !isSiteSearch) {
@@ -2720,6 +2809,9 @@ export async function getSearch(req, res) {
       });
       hits = paged.items;
       hasMore = paged.hasMore;
+      hasPrev = paged.hasPrev;
+      pageCursor = paged.pageCursor;
+      prevCursor = paged.prevCursor;
       nextCursor = paged.nextCursor;
     }
 
@@ -2747,7 +2839,10 @@ export async function getSearch(req, res) {
         cursor,
         facet
       },
+      pageCursor,
+      prevCursor,
       nextCursor,
+      hasPrev,
       hasMore,
       plan,
       hits: hitsPayload,
@@ -2810,12 +2905,14 @@ export async function postSearchPq(req, res) {
     const lang = payload.lang;
     const mode = payload.mode;
     const type = payload.type;
+    const rankAt = payload.rankAt ?? payload.rank_at;
 
     req.query = {
       q,
       limit,
       offset,
       cursor,
+      rankAt,
       facet,
       lang,
       mode,
